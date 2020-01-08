@@ -1,4 +1,3 @@
-## this script calculates the PFP correlation from the phenotypic data obtained with script '02_collecting_data_chembl.R'
 
 library(tidyverse)
 library(data.table)
@@ -86,7 +85,7 @@ write_rds(
 
 # rscores <- read_rds(file.path(dir_release, "pheno_data_rscores.rds"))
 
-# Calculate cosine distance ----------------------------------------------------
+# Calculate number of shared assays for each drug combination ------------------
 ###############################################################################T
 
 create_sparse_mat <- function(df) {
@@ -117,7 +116,7 @@ rscore_both_active <- rscores %>%
     )
   )
 
-rscore_sparse_mat <- rscore_both_active %>%
+rscore_both_active_sparse_mat <- rscore_both_active %>%
   mutate(
     data = map(
       data,
@@ -135,7 +134,7 @@ calculate_adjacency_matrix <- function(mat) {
 # each compound-compound pair
 # We will filter the cosine distances based on the number of overlapping assays
 
-pfp_adjacency_mat <- rscore_sparse_mat %>%
+pfp_adjacency_mat <- rscore_both_active_sparse_mat %>%
   mutate(
     data = map(
       data,
@@ -162,16 +161,26 @@ pwalk(
 
 # pfp_adjacency_mat <- read_rds(file.path(dir_release, "pfp_sim_adjacency_raw.rds"))
 
+# Calculate cosine distance between shared assays for each drug combination ----
+###############################################################################T
 
-pfp_table_raw <- rscore_sparse_mat %>%
+rscore_sparse_mat <- rscores %>%
   mutate(
     data = map(
-      data, qlcMatrix::cosSparse
-    )
+      data,
+      ~.x %>%
+        filter(is.finite(rscore_tr))
+    ) %>%
+      map(create_sparse_mat)
+  )
+
+pfp_sim_raw <- rscore_sparse_mat %>%
+  mutate(
+    data = map(data, qlcMatrix::cosSparse)
   )
 
 write_rds(
-  pfp_table_raw,
+  pfp_sim_raw,
   file.path(dir_release, "pfp_sim_cosine_raw.rds"),
   compress = "gz"
 )
