@@ -7,6 +7,7 @@ library(data.table)
 library(here)
 library(synapser)
 library(synExtra)
+library(lspcheminf)
 
 source(here("id_mapping", "chemoinformatics_funcs.R"))
 
@@ -402,7 +403,27 @@ canonical_inchis <- all_eq_class %>%
     )
   )
 
-create_canonical_table <- function(members, names, inchis) {
+# Find canonical SMILES representation -----------------------------------------
+###############################################################################T
+
+plan(multisession(workers = 4))
+canonical_smiles <- canonical_inchis %>%
+  mutate(
+    data = map(
+      data,
+      ~.x %>%
+        {set_names(.[["inchi"]], .[["eq_class"]])} %>%
+        split(sample(1:4, length(.), replace = TRUE)) %>%
+        future_map(convert_compound_identifier, identifier = "inchi", target_identifier = "smiles") %>%
+        bind_rows() %>%
+        select(eq_class = names, smiles = compounds)
+    )
+  )
+
+# Create table of canonical compounds ------------------------------------------
+###############################################################################T
+
+create_canonical_table <- function(members, names, inchis, smiles) {
   members %>%
     select(eq_class, source, id) %>%
     mutate(source = paste0(source, "_id")) %>%
@@ -413,6 +434,10 @@ create_canonical_table <- function(members, names, inchis) {
     ) %>%
     left_join(
       inchis,
+      by = "eq_class"
+    ) %>%
+    left_join(
+      smiles,
       by = "eq_class"
     ) %>%
     as_tibble() %>%
@@ -441,9 +466,14 @@ canonical_table <- canonical_members %>%
       rename(inchis = data),
     by = c("fp_name", "fp_type")
   ) %>%
+  left_join(
+    canonical_smiles %>%
+      rename(smiles = data),
+    by = c("fp_name", "fp_type")
+  ) %>%
   mutate(
     data = pmap(
-      list(members, names, inchis),
+      list(members, names, inchis, smiles),
       create_canonical_table
     )
   )
