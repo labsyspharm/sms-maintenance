@@ -1,15 +1,11 @@
 library(tidyverse)
 library(httr)
 library(furrr)
-library(RPostgres)
-library(bit64)
 library(jsonlite)
-library(data.table)
 library(here)
 library(synapser)
 library(synExtra)
-
-source(here("id_mapping", "chemoinformatics_funcs.R"))
+library(lspcheminf)
 
 synLogin()
 syn <- synDownloader(here("tempdl"))
@@ -41,15 +37,15 @@ rt_response = GET(
 )
 
 rt_df <- rt_response %>%
-  content("text", encoding = "UTF-8") %>%
-  fromJSON()%>%
+  content("parsed", type = "application/json", encoding = "UTF-8", simplifyVector = TRUE) %>%
   pluck("canonicals") %>%
   as_tibble() %>%
   filter(type == "small_molecule", name != "DEPRECATED") %>%
-  distinct(
+  transmute(
     hms_id = lincs_id,
     name,
-    alternate_names,
+    # Remove spurious empty lists
+    alternate_names = map(alternate_names, ~if (length(.x) == 0) NULL else .x),
     smiles,
     inchi,
     inchi_key,
@@ -64,7 +60,9 @@ rt_df_inchi <- rt_df %>%
       inchi, smiles,
       # Only convert if inchi is unknown and smiles is known
       # otherwise use known inchi
-      ~if (is.na(.x) && !is.na(.y)) convert_id(.y, "smiles", "inchi")[[.y]] else .x
+      ~if (is.na(.x) && !is.na(.y))
+        convert_compound_identifier(.y, identifier = "smiles", target_identifier = "inchi")[["compounds"]]
+      else .x
     )
   ) %>%
   # Some inchis have newline characters at the end of line, remove them
@@ -74,7 +72,7 @@ write_rds(
   rt_df_inchi,
   file.path(dir_release, "hmsl_compounds_raw.rds")
 )
-# rt_df_inchi <- read_rds(file.path(dir_release, "hmsl_compounds_raw.rds"))
+rt_df_inchi <- read_rds(file.path(dir_release, "hmsl_compounds_raw.rds"))
 
 # Canonicalize LINCS compounds -------------------------------------------------
 ###############################################################################T
@@ -84,26 +82,25 @@ write_rds(
 # Only use annotated LINCS Chembl ID if we can't find it using the inchi_key
 
 # We have to first generate the canonical tautomer for each compound
-plan(multisession(workers = 8))
+plan(multisession(workers = 4))
 hms_lincs_compounds_canonical_inchis <- rt_df_inchi %>%
   drop_na(inchi) %>%
-  pull("inchi") %>%
-  unique() %>%
-  split((seq(length(.)) - 1) %/% 100) %>%
-  future_map(canonicalize, key = "inchi", standardize = TRUE)
+  select(hms_id, inchi) %>%
+  chunk_df(12) %>%
+  future_map(
+    ~canonicalize_compound(set_names(.x$inchi, .x$hms_id)),
+    .progress = TRUE
+  )
 
 hms_lincs_compounds_canonical_inchis_df <- hms_lincs_compounds_canonical_inchis %>%
-  map(chuck, "canonicalized") %>%
-  map(as_tibble) %>%
   bind_rows() %>%
-  distinct(original_inchi = query, inchi, canonical_smiles = smiles)
+  distinct(hms_id = compound, inchi)
 
 hms_lincs_compounds_canonical <- rt_df_inchi %>%
   select(hms_id, original_inchi = inchi) %>%
   left_join(
-    hms_lincs_compounds_canonical_inchis_df %>%
-      select(original_inchi, inchi),
-    by = "original_inchi"
+    hms_lincs_compounds_canonical_inchis_df,
+    by = "hms_id"
   ) %>%
   mutate(
     # Whe canonicalization failed, use original inchi
@@ -114,7 +111,7 @@ write_csv(
   hms_lincs_compounds_canonical,
   file.path(dir_release, "hmsl_compounds_canonical.csv.gz")
 )
-# hms_lincs_compounds_canonical <- read_csv(file.path(dir_release, "hmsl_compounds_canonical.csv.gz"))
+hms_lincs_compounds_canonical <- read_csv(file.path(dir_release, "hmsl_compounds_canonical.csv.gz"))
 
 # Store to synapse -------------------------------------------------------------
 ###############################################################################T
@@ -125,7 +122,11 @@ fetch_hmsl_activity <- Activity(
 )
 
 c(
-  file.path(dir_release, "hmsl_compounds_canonical.csv.gz"),
   file.path(dir_release, "hmsl_compounds_raw.rds")
 ) %>%
-  synStoreMany(parent = syn_release, activity = fetch_hmsl_activity)
+  synStoreMany(parent = "syn21064123", activity = fetch_hmsl_activity)
+
+c(
+  file.path(dir_release, "hmsl_compounds_canonical.csv.gz")
+) %>%
+  synStoreMany(parent = "syn21093671", activity = fetch_hmsl_activity)
