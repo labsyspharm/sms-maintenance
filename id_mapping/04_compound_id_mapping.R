@@ -1,15 +1,11 @@
 library(tidyverse)
-library(httr)
-library(RPostgres)
-library(bit64)
 library(furrr)
 library(data.table)
+library(bit64)
 library(here)
 library(synapser)
 library(synExtra)
 library(lspcheminf)
-
-source(here("id_mapping", "chemoinformatics_funcs.R"))
 
 synLogin()
 syn <- synDownloader(here("tempdl"))
@@ -21,235 +17,23 @@ syn_release <- synFindEntityId(release, "syn18457321")
 # Loading files ----------------------------------------------------------------
 ###############################################################################T
 
-similarity_df <- syn("syn20692550") %>%
-  read_csv()
-
-
-# Map HMSL by name -------------------------------------------------------------
-###############################################################################T
-
-# Only done for compounds where for some reason no comparison based on molecular
-# fingerprint was possible. Eg. no Inchi was provided in Reagent Tracker
-
 hmsl_cmpds <- syn("syn20692443") %>%
   read_rds()
 
 chembl_cmpds <- syn("syn20692440") %>%
   read_rds()
 
-hmsl_name_matches <- hmsl_cmpds %>%
-  filter(
-    !(hms_id %in% (
-      similarity_df %>%
-        filter(str_starts(query, "HMSL"), str_starts(match, "CHEMBL")) %>%
-        pull(query) %>%
-        unique()
-    )
-    )
-  ) %>%
-  mutate(
-    name = str_to_lower(name)
-  ) %>%
-  select(-chembl_id) %>%
-  left_join(
-    chembl_cmpds %>%
-      transmute(chembl_id, pref_name = str_to_lower(pref_name)),
-    by = c("name" = "pref_name")
-  ) %>%
-  drop_na(chembl_id)
+eq_classes <- syn("syn20830516") %>%
+  read_rds()
 
-identity_df <- bind_rows(
-  similarity_df %>%
-    select(-score),
-  hmsl_name_matches %>%
-    select(query = hms_id, match = chembl_id) %>%
-    tidyr::crossing(
-      distinct(similarity_df, fp_name, fp_type)
-    )
-)
-
-# Defining equivalence classes -------------------------------------------------
-###############################################################################T
-
-library(igraph)
-
-# Making graph of compounds where edges represent identical compounds
-# Extracting the "components" of the graph, isolated subgraphs, they
-# represent equivalence clusters of identical compounds
-
-calc_identity_classes <- function(df) {
-  cmpds_identical_graph <- df %>%
-    mutate(
-      id1 = ifelse(match > query, query, match),
-      id2 = ifelse(match > query, match, query)
-    ) %>%
-    distinct(id1, id2) %>%
-    as.matrix() %>%
-    graph_from_edgelist(directed = FALSE)
-
-  components(cmpds_identical_graph) %>%
-    pluck("membership") %>%
-    enframe(value = "eq_class", name = "id") %>%
-    mutate(eq_class = as.integer(eq_class))
-}
-
-
-
-# To establish identity between compounds, require that the topological FP
-# matches and one of the Morgan FPs and that their molecular mass is identical
-
-cmpds_canonical <- syn("syn20692514") %>%
+pubchem_names <- syn("syn21572728") %>%
   read_csv()
 
-plan(multisession(workers = 8))
-cmpd_mass <- cmpds_canonical %>%
-  distinct(inchi) %>%
-  drop_na(inchi) %>%
-  # slice(1:100) %>%
-  slice(sample(nrow(.))) %>%
-  pull("inchi") %>%
-  split((seq(length(.)) - 1) %/% 10000) %>%
-  future_map(calculate_mass, .progress = TRUE) %>%
-  map("mass") %>%
-  bind_rows() %>%
-  distinct() %>%
-  left_join(cmpds_canonical, by = c("compound" = "inchi"))
+chembl_canonical <- syn("syn20692439") %>%
+  read_csv()
 
-cmpd_mass_map <- cmpd_mass %>%
-  distinct(id, mass)
-
-assign_func <- function(x, y) mutate(x, !!sym(y) := TRUE)
-
-identity_df_combined <- identity_df %>%
-  group_nest(fp_name, fp_type) %>%
-  # Making a column for every combination that just contains true
-  # for joining later
-  mutate(
-    data = map2(data, fp_name, assign_func)
-  ) %>%
-  pull("data") %>%
-  reduce(full_join, by = c("match", "query")) %>%
-  mutate_if(is.logical, replace_na, FALSE) %>%
-  left_join(
-    cmpd_mass_map %>%
-      rename(mass_query = mass),
-    by = c("query" = "id")
-  ) %>%
-  left_join(
-    cmpd_mass_map %>%
-      rename(mass_match = mass),
-    by = c("match" = "id")
-  ) %>%
-  # If masses couldn't be calculated, for
-  mutate(mass_identical = replace_na(mass_query == mass_match, TRUE)) %>%
-  # Here checking if either of the morgan fingerprints is identical AND topological AND mass
-  mutate_at(
-    vars(starts_with("morgan"),  topological_normal),
-    function(...) pmap_lgl(list(...), all),
-    .$topological_normal, .$mass_identical
-  ) %>%
-  # Correcting the 6 crazy cases where morgan_normal is FALSE and morgan_chiral is TRUE
-  # This should be impossible so setting the morgan_normal to TRUE whenever
-  # morgan_chiral is TRUE
-  mutate(
-    morgan_normal = morgan_chiral | morgan_normal
-  )
-
-identity_df_combined_nested <- identity_df_combined %>%
-  select(-starts_with("mass")) %>%
-  gather("fp_name", "is_identical", everything(), -match, -query) %>%
-  mutate(fp_type = str_split_fixed(fp_name, fixed("_"), 2)[, 1]) %>%
-  filter(is_identical) %>%
-  group_nest(fp_type, fp_name)
-
-cmpd_eq_classes <- identity_df_combined_nested %>%
-  mutate(
-    data = map(data, calc_identity_classes)
-  )
-
-# Sanity check equivalence classes ---------------------------------------------
-###############################################################################T
-
-# Checking if the parent_molregno annotation in Chembl is comparable to what we
-# find using our canonicalization followed by fingerprint matching approach.
-
-# Augmenting identity map with data from the Chembl parent annotation
-chembl_cmpds_with_parent <- chembl_cmpds %>%
-  filter(molregno != parent_molregno) %>%
-  left_join(
-    chembl_cmpds %>%
-      select(molregno, parent_chembl_id = chembl_id, parent_standard_inchi = standard_inchi),
-    by = c("parent_molregno" = "molregno")
-  ) %>%
-  select(molregno, chembl_id, parent_chembl_id, standard_inchi, parent_standard_inchi)
-#
-# identity_df_augmented <- identity_df %>%
-#   bind_rows(
-#     chembl_cmpds_with_parent %>%
-#       select(query = chembl_id, match = parent_chembl_id) %>%
-#       distinct() %>%
-#       tidyr::crossing(select(similarity_df, fp_name, fp_type))
-#   )
-
-chembl_cmpds_with_parent_eq_class <- chembl_cmpds_with_parent %>%
-  left_join(
-    cmpd_eq_classes %>%
-      unnest(data),
-    by = c("chembl_id" = "id")
-  ) %>%
-  left_join(
-    cmpd_eq_classes %>%
-      unnest(data) %>%
-      rename(parent_eq_class = eq_class),
-    by = c("parent_chembl_id" = "id", "fp_name", "fp_type")
-  )
-
-# Compounds where the eq_class of the Chembl parent compound is different
-# from the eq_class of the compound itself
-chembl_cmpds_with_parent_disagree <- chembl_cmpds_with_parent_eq_class %>%
-  filter(eq_class != parent_eq_class)
-# Should be zero, some (~200) disagree but that shouldn't be a huge problem
-
-
-# Adding equivalence class for all compounds -----------------------------------
-###############################################################################T
-
-# Add eq_class for compounds for which no inchi is known or whose inchi is not parseable
-add_missing_eq_class <- function(eq_class_df, compound_df) {
-  compound_df %>%
-    left_join(eq_class_df, by = "id") %>%
-    mutate(
-      eq_class = if_else(
-        is.na(eq_class),
-        cumsum(is.na(eq_class)) + max(eq_class, na.rm = TRUE),
-        eq_class
-      )
-    )
-}
-
-all_eq_class <- cmpd_eq_classes %>%
-  mutate(
-    data = map(
-      data,
-      add_missing_eq_class,
-      compound_df = bind_rows(
-        chembl_cmpds %>%
-          distinct(id = chembl_id) %>%
-          mutate(source = "chembl"),
-        hmsl_cmpds %>%
-          distinct(id = hms_id) %>%
-          mutate(source = "hmsl")
-      )
-    )
-  )
-
-write_rds(
-  all_eq_class,
-  file.path(dir_release, "all_compounds_equivalence_classes.rds"),
-  compress = "gz"
-)
-
-# all_eq_class <- read_rds(file.path(dir_release, "all_compounds_equivalence_classes.rds"))
+hmsl_canonical <- syn("syn20692442") %>%
+  read_csv()
 
 # Finding canonical member of equivalence class --------------------------------
 ###############################################################################T
@@ -279,7 +63,7 @@ find_canonical_member <- function(eq_class_df, compound_df) {
         id_number = as.integer(str_extract(id, "\\d+"))
       ),
       keyby = eq_class
-      ] %>%
+    ] %>%
     .[
       order(
         eq_class,
@@ -294,7 +78,7 @@ find_canonical_member <- function(eq_class_df, compound_df) {
       ]
 }
 
-canonical_members <- all_eq_class %>%
+canonical_members <- eq_classes %>%
   mutate(
     data = map(
       data,
@@ -309,90 +93,148 @@ canonical_members <- all_eq_class %>%
     )
   )
 
+write_rds(
+  canonical_members,
+  file.path(dir_release, "canonical_members.rds")
+)
+# canonical_members <- read_rds(
+#   file.path(dir_release, "canonical_members.rds")
+# )
 
-# Finding canonical name and inchi ---------------------------------------------
+# Finding canonical names ------------------------------------------------------
 ###############################################################################T
 
-find_canonical_name <- function(eq_class_df, compound_df) {
+all_names <- list(
+  "chembl" = chembl_cmpds %>%
+    transmute(
+      id = chembl_id,
+      name = map2(
+        pref_name, synonyms,
+        ~c(if (!is.na(.x)) .x, if (!is.null(.y)) .y)
+      )
+    ) %>%
+    unchop(name),
+  "pubchem" = pubchem_names %>%
+    select(id = chembl_id, name) %>%
+    filter(str_starts(name, "S?CHEMBL", negate = TRUE)),
+  "hmsl" = hmsl_cmpds %>%
+    transmute(
+      id = hms_id,
+      name = map2(
+        name, alternate_names,
+        ~c(if (!is.na(.x)) .x, if (!is.null(.y)) .y)
+      )
+    ) %>%
+    unchop(name)
+) %>%
+  bind_rows(.id = "source") %>%
+  # Arrange sources by most to least trust-worthy
+  mutate(
+    source = factor(source, levels = c("chembl", "hmsl", "pubchem"))
+  ) %>%
+  arrange(id, source) %>%
+  distinct()
+
+find_canonical_names <- function(eq_class_df, name_df) {
   as.data.table(eq_class_df) %>%
+    .[, list(eq_class, id)] %>%
     .[
-      compound_df,
-      on = "id"
-      ] %>%
+      name_df,
+      on = "id",
+      nomatch = NULL
+    ] %>%
     .[
       order(eq_class, source)
-      ] %>%
+    ] %>%
     .[
       ,
       .(
-        pref_name = pref_name[[1]],
-        alt_names = list(reduce(alt_names, union))
+        pref_name = name[[1]],
+        alt_names = list(name[-1])
       ),
-      keyby = eq_class
-      ]
+      by = eq_class
+    ]
 }
 
-canonical_names <- all_eq_class %>%
+canonical_names <- eq_classes %>%
   mutate(
     data = map(
       data,
-      find_canonical_name,
-      compound_df = rbindlist(list(
-        chembl_cmpds %>%
-          select(id = chembl_id, pref_name, alt_names = synonyms),
-        hmsl_cmpds %>%
-          select(id = hms_id, pref_name = name, alt_names = alternate_names)
-      ))
-    )
+      find_canonical_names,
+      name_df = as.data.table(all_names)
+    ) %>%
+      map(as_tibble)
   )
 
-cmpd_inchis_raw <- syn("syn20692514") %>%
-  read_csv(col_types = "cccc")
+# Finding canonical Inchis -----------------------------------------------------
+###############################################################################T
 
-find_canonical_inchis <- function(eq_class_df, raw_inchis) {
+all_inchis <- list(
+  "chembl" = chembl_canonical %>%
+    distinct(id = chembl_id, inchi),
+  "hmsl" = hmsl_canonical %>%
+    distinct(id = hms_id, inchi)
+) %>%
+  bind_rows(.id = "source") %>%
+  # Arrange sources by most to least trust-worthy
+  mutate(
+    source = factor(source, levels = c("chembl", "hmsl"))
+  ) %>%
+  arrange(id, source) %>%
+  distinct() %>%
+  drop_na()
+
+find_canonical_inchi <- function(eq_class_df, raw_inchis) {
   as.data.table(eq_class_df) %>%
+    .[, list(eq_class, id)] %>%
     .[
       raw_inchis,
-      on = "id"
-      ] %>%
+      on = "id",
+      nomatch = NULL
+    ] %>%
     .[
       order(eq_class, source)
-      ] %>%
+    ] %>%
     .[
       ,
       .(
         inchi = inchi[[1]]
       ),
-      keyby = "eq_class"
-      ]
+      by = "eq_class"
+    ]
 }
 
-canonical_inchis <- all_eq_class %>%
+canonical_inchis <- eq_classes %>%
   mutate(
     data = map(
       data,
-      find_canonical_inchis,
-      raw_inchis = cmpd_inchis_raw %>%
-        distinct(id, inchi) %>%
-        drop_na() %>%
+      find_canonical_inchi,
+      raw_inchis = all_inchis %>%
         as.data.table()
-    )
+    ) %>%
+      map(as_tibble)
   )
 
 # Find canonical SMILES representation -----------------------------------------
 ###############################################################################T
 
-plan(multisession(workers = 4))
+plan(multisession(workers = 6))
 canonical_smiles <- canonical_inchis %>%
   mutate(
     data = map(
       data,
       ~.x %>%
         {set_names(.[["inchi"]], .[["eq_class"]])} %>%
-        split(sample(1:4, length(.), replace = TRUE)) %>%
-        future_map(convert_compound_identifier, identifier = "inchi", target_identifier = "smiles") %>%
+        split(sample(1:18, length(.), replace = TRUE)) %>%
+        future_map(
+          convert_compound_identifier,
+          identifier = "inchi",
+          target_identifier = "smiles",
+          .progress = TRUE
+        ) %>%
         bind_rows() %>%
-        select(eq_class = names, smiles = compounds)
+        select(eq_class = names, smiles = compounds) %>%
+        mutate_at(vars(eq_class), as.integer)
     )
   )
 
@@ -530,7 +372,7 @@ canonical_table %>%
 
 create_non_canonical_table <- function(all_eq_class, cmpd_inchis) {
   all_eq_class %>%
-    left_join(
+    inner_join(
       cmpd_inchis %>%
         distinct(id, inchi),
       by = "id"
@@ -538,18 +380,18 @@ create_non_canonical_table <- function(all_eq_class, cmpd_inchis) {
     rename(lspci_id = eq_class)
 }
 
-alt_table <- all_eq_class %>%
+alt_table <- eq_classes %>%
   mutate(
     data = map(
       data,
       create_non_canonical_table,
-      cmpd_inchis = cmpd_inchis_raw
+      cmpd_inchis = all_inchis
     )
   )
 
 write_rds(
   alt_table,
-  file.path(dir_release, "compound_mapping.rds"),
+  file.path(dir_release, "lspci_id_compound_inchi_mapping.rds"),
   compress =  "gz"
 )
 
@@ -563,7 +405,10 @@ cmpd_wrangling_activity <- Activity(
     "syn20692443",
     "syn20692440",
     "syn20692514",
-    "syn20692514"
+    "syn20830516",
+    "syn21572728",
+    "syn20692439",
+    "syn20692442"
   ),
   executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/id_mapping/04_compound_id_mapping.R"
 )
@@ -573,10 +418,8 @@ syn_id_mapping <- Folder("id_mapping", parent = syn_release) %>%
   chuck("properties", "id")
 
 c(
-  # file.path(dir_release, "all_compounds_similarity.csv.gz"),
-  file.path(dir_release, "canonical_table.rds")
-  # file.path(dir_release, "all_compounds_equivalence_classes.rds"),
-  # file.path(dir_release, "compound_mapping.rds")
+  file.path(dir_release, "canonical_table.rds"),
+  file.path(dir_release, "lspci_id_compound_inchi_mapping.rds")
 ) %>%
   synStoreMany(parent = syn_id_mapping, activity = cmpd_wrangling_activity)
 
