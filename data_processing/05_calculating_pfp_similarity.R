@@ -205,3 +205,23 @@ pwalk(
 # due to memory constraints
 # In file 05_calculating_pfp_similarity_processing.R
 
+# Upload to synapse ------------------------------------------------------------
+###############################################################################T
+
+pfp_activity <- Activity(
+  name = "Calculate phenotypic correlation",
+  used = c(
+    "syn20841032"
+  ),
+  executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/data_processing/05_calculating_pfp_similarity.R"
+)
+
+syn_pfp_sim <- Folder("pfp_similarity", parent = syn_release) %>%
+  synStore() %>%
+  chuck("properties", "id")
+
+c(
+  file.path(dir_release, "pheno_data_rscores.rds")
+) %>%
+  synStoreMany(parent = syn_pfp_sim, activity = pfp_activity)
+
