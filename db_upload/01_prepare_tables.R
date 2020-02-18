@@ -20,7 +20,7 @@ syn_release <- synFindEntityId(release, "syn18457321")
 
 tables <- tribble(
   ~name, ~synapse_id, ~used,
-  "lsp_compound_dictionary", "syn20835543", "syn21049601",
+  # "lsp_compound_dictionary", "syn20835543", "syn21049601",
   # # "lsp_target_dictionary", "syn20693721", NULL,
   # "lsp_biochem", "syn20830825", NULL,
   # "lsp_phenotypic_chembl", "syn20976900", NULL,
@@ -29,7 +29,8 @@ tables <- tribble(
   # "lsp_one_dose_scans", "syn20830835", NULL,
   # "lsp_tas_similarity", "syn21052803", NULL,
   # "lsp_clinical_info", "syn21064122", NULL,
-  "lsp_commercial_availability", "syn21049601", NULL
+  # "lsp_commercial_availability", "syn21049601", NULL
+  "lsp_fingerprints", "syn21042105", NULL
 ) %>%
   mutate(
     data = map(
