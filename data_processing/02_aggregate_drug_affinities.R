@@ -64,7 +64,7 @@ pheno_data_neat <- all_cmpds_eq_classes %>%
       ~pheno_data %>%
         left_join(
           .x %>%
-            select(id, eq_class),
+            select(id, lspci_id = eq_class),
           by = c("chembl_id_compound" = "id")
         )
     )
@@ -144,8 +144,11 @@ calculate_q1 <- function(data) {
     data.table::as.data.table() %>%
     .[
       ,
-      .(Q1 = round(quantile(value, 0.25, names = FALSE), 2)),
-      by = .(eq_class, entrez_gene_id)
+      .(
+        Q1 = round(quantile(value, 0.25, names = FALSE), 2),
+        n_measurement = .N
+      ),
+      by = .(lspci_id, entrez_gene_id)
       ] %>%
     as_tibble() %>%
     mutate(binding = if_else(Q1 < 10000, 1L, 0L))
@@ -256,8 +259,11 @@ hmsl_kinomescan_q1 <- hmsl_kinomescan_mapped %>%
         as.data.table() %>%
         .[
           ,
-          .(percent_control_Q1 = quantile(percent_control, 0.25, names = FALSE)),
-          by = .(eq_class, entrez_gene_id, cmpd_conc_nM)
+          .(
+            percent_control_Q1 = quantile(percent_control, 0.25, names = FALSE),
+            n_measurement = .N
+          ),
+          by = .(lspci_id, entrez_gene_id, cmpd_conc_nM)
           ] %>%
         as_tibble()
     )
@@ -284,7 +290,7 @@ pheno_data_formatted <- pheno_data_neat %>%
           file_url = paste0("https://www.ebi.ac.uk/chembl/document_report_card/", chembl_id_doc)
         ) %>%
         select(
-          lspci_id = eq_class,
+          lspci_id, assay_id,
           value = standard_value, value_unit = standard_units, value_type = standard_type,
           value_relation = standard_relation, description_assay = description,
           reference_id, reference_type, file_url
@@ -308,9 +314,10 @@ pheno_data_q1 <- pheno_data_neat %>%
           ,
           .(
             standard_value_Q1 = quantile(standard_value, 0.25, names = FALSE),
-            log10_value_Q1 = quantile(log10_value, 0.25, names = FALSE)
+            log10_value_Q1 = quantile(log10_value, 0.25, names = FALSE),
+            n_measurement = .N
           ),
-          keyby = .(eq_class, assay_id)
+          keyby = .(lspci_id, assay_id)
           ] %>%
         as_tibble()
     )
