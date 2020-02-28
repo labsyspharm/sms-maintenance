@@ -246,11 +246,37 @@ write_csv(
   file.path(dir_release, "chembl_approval_info_phase1to4cmpds.csv.gz")
 )
 
+
+# get document data ------------------------------------------------------------
+###############################################################################T
+
+doc_info <- dbGetQuery(
+  con,
+  "SELECT chembl_id AS chembl_id_doc, title, doc_type, pubmed_id, doi, patent_id
+  FROM docs"
+)
+
+write_csv(
+  doc_info,
+  file.path(dir_release, "chembl_doc_info.csv.gz")
+)
+
+doc_ref_info <- doc_info %>%
+  as_tibble() %>%
+  dplyr::select(chembl_id_doc, doc_type, pubmed_id, doi, patent_id) %>%
+  mutate_at(vars(pubmed_id, doi, patent_id), as.character) %>%
+  gather("reference_type", "reference_id", pubmed_id, doi, patent_id, na.rm = TRUE)
+
+write_csv(
+  doc_ref_info,
+  file.path(dir_release, "chembl_ref_info.csv.gz")
+)
+
 # Store to synapse -------------------------------------------------------------
 ###############################################################################T
 
 fetch_chembl_activity <- Activity(
-  name = "Fetch ChEMBL acitivy data",
+  name = "Fetch ChEMBL actitivy data",
   used = "syn20693721",
   executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/data_processing/01_chembl_data.R"
 )
@@ -258,6 +284,18 @@ fetch_chembl_activity <- Activity(
 c(
   file.path(dir_release, "chembl_biochemicaldata.csv.gz"),
   file.path(dir_release, "chembl_phenotypic_assaydata.csv.gz"),
+  file.path(dir_release, "chembl_doc_info.csv.gz")
+) %>%
+  synStoreMany(parent = "syn21064123", activity = fetch_chembl_activity)
+
+
+c(
   file.path(dir_release, "chembl_approval_info_phase1to4cmpds.csv.gz")
 ) %>%
-  synStoreMany(parent = syn_release, activity = fetch_chembl_activity)
+  synStoreMany(parent = "syn21064120", activity = fetch_chembl_activity)
+
+c(
+  file.path(dir_release, "chembl_ref_info.csv.gz")
+) %>%
+  synStoreMany(parent = "syn20830877", activity = fetch_chembl_activity)
+
