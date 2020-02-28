@@ -1,5 +1,4 @@
 library(tidyverse)
-library(httr)
 library(data.table)
 library(here)
 library(synapser)
@@ -14,6 +13,18 @@ syn_release <- synFindEntityId(release, "syn18457321")
 
 # set directories & import files -----------------------------------------------
 ###############################################################################T
+
+chembl_ref_info <- syn("syn21652213") %>%
+  read_csv(col_types = "cccc") %>%
+  mutate(
+    reference_type = factor(reference_type, levels = c("pubmed_id", "doi", "patent_id"))
+  )
+
+chembl_ref_info_best <- chembl_ref_info %>%
+  arrange(reference_type) %>%
+  group_by(chembl_id_doc, doc_type) %>%
+  slice(1) %>%
+  ungroup()
 
 all_cmpds_eq_classes <- syn("syn20830516") %>%
   read_rds()
@@ -78,13 +89,17 @@ biochem_rowbind <- biochem_neat %>%
     data = map(
       data,
       ~.x %>%
+        left_join(
+          select(chembl_ref_info_best,  chembl_id_doc, reference_type, reference_id),
+          by = "chembl_id_doc"
+        ) %>%
         mutate(
-        reference_id = chembl_id_doc,
-        reference_type = "chembl_id",
-        file_url = paste0("https://www.ebi.ac.uk/chembl/document_report_card/",chembl_id_doc),
-        value = standard_value,
-        value_unit = standard_units
-      ) %>%
+          file_url = paste0("https://www.ebi.ac.uk/chembl/document_report_card/", chembl_id_doc),
+          value = standard_value,
+          value_unit = standard_units,
+          reference_id = if_else(is.na(reference_id), chembl_id_doc, reference_id),
+          reference_type = if_else(is.na(reference_type), "chembl_id", as.character(reference_type)),
+        ) %>%
         select(
           lspci_id = eq_class,
           value, value_unit = standard_units, value_type = standard_type,
@@ -135,23 +150,25 @@ write_rds(
   compress = "gz"
 )
 
-#test: unit
-complete_table$value_unit%>%unique()
-
 # Using data.table here for speed
 calculate_q1 <- function(data) {
   data %>%
-    data.table::as.data.table() %>%
+    as.data.table() %>%
     .[
       ,
       .(
         Q1 = round(quantile(value, 0.25, names = FALSE), 2),
-        n_measurement = .N
+        n_measurement = .N,
+        references = paste(
+          recode(unique(.SD)[["reference_type"]], pubmed_id = "pubmed", patent_id = "patent", chembl_id = "chembl", synapse_id = "synapse"),
+          unique(.SD)[["reference_id"]],
+          sep = ":",
+          collapse = "|"
+        )
       ),
       by = .(lspci_id, entrez_gene_id)
-      ] %>%
-    as_tibble() %>%
-    mutate(binding = if_else(Q1 < 10000, 1L, 0L))
+    ] %>%
+    as_tibble()
 }
 
 complete_table_Q1 <- complete_table %>%
@@ -227,7 +244,8 @@ hmsl_kinomescan_mapped <- all_cmpds_eq_classes %>%
         ) %>%
         # I checked, no gene_symbol maps to multiple uniprot, so this is safe
         mutate(
-          uniprot_id = as.character(uniprot_ids)
+          uniprot_id = as.character(uniprot_ids),
+          reference_type = "synapse"
         ) %>%
         select(-uniprot_ids) %>%
         left_join(
@@ -239,7 +257,9 @@ hmsl_kinomescan_mapped <- all_cmpds_eq_classes %>%
           entrez_gene_id = entrez_id,
           pref_name_cmpd = pref_name,
           pref_name_target = name,
-          lspci_id = eq_class
+          lspci_id = eq_class,
+          reference_id = source_assay_id,
+          file_url = url
         ) %>%
         drop_na(entrez_gene_id)
     )
@@ -261,10 +281,16 @@ hmsl_kinomescan_q1 <- hmsl_kinomescan_mapped %>%
           ,
           .(
             percent_control_Q1 = quantile(percent_control, 0.25, names = FALSE),
-            n_measurement = .N
+            n_measurement = .N,
+            references = paste(
+              unique(recode(reference_type, pubmed_id = "pubmed", patent_id = "patent", chembl_id = "chembl")),
+              unique(reference_id),
+              sep = ":",
+              collapse = "|"
+            )
           ),
           by = .(lspci_id, entrez_gene_id, cmpd_conc_nM)
-          ] %>%
+        ] %>%
         as_tibble()
     )
   )
@@ -284,9 +310,13 @@ pheno_data_formatted <- pheno_data_neat %>%
     data = map(
       data,
       ~.x %>%
+        left_join(
+          select(chembl_ref_info_best, chembl_id_doc, reference_type, reference_id),
+          by = "chembl_id_doc"
+        ) %>%
         mutate(
-          reference_id = chembl_id_doc,
-          reference_type = "chembl_id",
+          reference_id = if_else(is.na(reference_id), chembl_id_doc, reference_id),
+          reference_type = if_else(is.na(reference_type), "chembl_id", as.character(reference_type)),
           file_url = paste0("https://www.ebi.ac.uk/chembl/document_report_card/", chembl_id_doc)
         ) %>%
         select(
@@ -304,7 +334,7 @@ write_rds(
   compress = "gz"
 )
 
-pheno_data_q1 <- pheno_data_neat %>%
+pheno_data_q1 <- pheno_data_formatted %>%
   mutate(
     data = map(
       data,
@@ -313,12 +343,18 @@ pheno_data_q1 <- pheno_data_neat %>%
         .[
           ,
           .(
-            standard_value_Q1 = quantile(standard_value, 0.25, names = FALSE),
-            log10_value_Q1 = quantile(log10_value, 0.25, names = FALSE),
-            n_measurement = .N
+            standard_value_Q1 = quantile(value, 0.25, names = FALSE),
+            log10_value_Q1 = quantile(log10(value), 0.25, names = FALSE),
+            n_measurement = .N,
+            references = paste(
+              recode(unique(.SD)[["reference_type"]], pubmed_id = "pubmed", patent_id = "patent", chembl_id = "chembl"),
+              unique(.SD)[["reference_id"]],
+              sep = ":",
+              collapse = "|"
+            )
           ),
-          keyby = .(lspci_id, assay_id)
-          ] %>%
+          by = .(lspci_id, assay_id)
+        ] %>%
         as_tibble()
     )
   )
