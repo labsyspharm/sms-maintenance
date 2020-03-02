@@ -26,21 +26,21 @@ complete_single_dose_Q1 <- syn("syn20830836") %>%
 # Checking if all target/compound combinations are unique
 complete_dose_response_Q1 %>%
   unnest(data) %>%
-  count(fp_name, fp_type, eq_class, entrez_gene_id) %>%
+  count(fp_name, fp_type, lspci_id, entrez_gene_id) %>%
   count(n)
 # # A tibble: 1 x 2
 # n      nn
 # <int>   <int>
-#   1     1 1776340
+#   1     1 2672949
 
 complete_single_dose_Q1 %>%
   unnest(data) %>%
-  count(fp_name, fp_type, eq_class, entrez_gene_id, cmpd_conc_nM) %>%
+  count(fp_name, fp_type, lspci_id, entrez_gene_id, cmpd_conc_nM) %>%
   count(n)
 # # A tibble: 1 x 2
 # n     nn
 # <int>  <int>
-#   1     1 130796
+#   1     1 196194
 
 cmpd_eq_classes <- syn("syn20830516") %>%
   read_rds()
@@ -59,8 +59,12 @@ literature_annotations <- cmpd_eq_classes %>%
             select(eq_class, id),
           by = c("hms_id" = "id")
         ) %>%
-        select(eq_class, entrez_gene_id = gene_id) %>%
-        mutate(tas_literature = 2L) %>%
+        select(lspci_id = eq_class, entrez_gene_id = gene_id) %>%
+        mutate(
+          tas = 2L,
+          measurement = "Manual literature curation",
+          references = "synapse:syn20694521"
+        ) %>%
         # There are some duplicates in the literature annotation file
         # plus, in one case, two HMSL ids map to the same eq_class
         distinct()
@@ -84,7 +88,8 @@ complete_table_tas <- complete_dose_response_Q1 %>%
             Q1 < 10000 ~ 3L,
             Q1 >= 10000 ~ 10L,
             TRUE ~ NA_integer_
-          )
+          ),
+          measurement = paste0("Affinity ", Q1, " nM")
         )
     )
   )
@@ -118,12 +123,12 @@ hmsl_kinomescan_tas %>%
   .[
     ,
     .(n = length(unique(na.omit(tas))) > 1),
-    keyby = .(fp_name, fp_type, eq_class, entrez_gene_id)
+    by = .(fp_name, fp_type, lspci_id, entrez_gene_id)
   ] %>%
   .[
     ,
     sum(n),
-    keyby = .(fp_name, fp_type)
+    by = .(fp_name, fp_type)
   ]
 # fp_name     fp_type V1
 # 1:      morgan_chiral      morgan 42
@@ -139,19 +144,29 @@ hmsl_kinomescan_tas_agg <- hmsl_kinomescan_tas %>%
     data = map(
       data,
       ~.x %>%
+        drop_na(tas) %>%
         as.data.table() %>%
         .[
-          ,
-          .(tas = if(all(is.na(tas))) NA_integer_ else min(tas, na.rm = TRUE)),
-          keyby = .(eq_class, entrez_gene_id)
-          ] %>%
-        as_tibble() %>%
-        # Drop any NAs here, sometimes no TAS assertion can be made
-        # if percent_control value is in a certain range
-        drop_na(tas)
+          order(tas),
+          .SD[
+            tas == tas[1],
+            .(
+              tas = tas[1],
+              references = str_split(references, fixed("|")) %>%
+                unlist() %>%
+                unique() %>%
+                paste(collapse = "|"),
+              measurement = paste(
+                percent_control_Q1, "% control at ", cmpd_conc_nM, " nM",
+                sep = "", collapse = "; "
+              )
+            )
+          ],
+          by = .(lspci_id, entrez_gene_id)
+        ] %>%
+        as_tibble()
     )
   )
-
 
 combined_q1 <- complete_table_tas %>%
   rename(dose_response = data) %>%
@@ -166,34 +181,20 @@ combined_q1 <- complete_table_tas %>%
   mutate(
     data = pmap(
       list(dose_response, single_dose, literature),
-      function(dose_response, single_dose, literature) {
-        full_join(
-          dose_response %>%
-            select(eq_class, entrez_gene_id, tas_affinity = tas),
-          single_dose %>%
-            select(eq_class, entrez_gene_id, tas_single_dose = tas),
-          by = c("eq_class", "entrez_gene_id")
+      function(...) {
+        tibble(
+          source = c("dose_response", "single_dose", "literature") %>%
+            {factor(x = ., levels = .)},
+          data = map(
+            list(...),
+            select, lspci_id, entrez_gene_id, tas, measurement, references
+          )
         ) %>%
-          full_join(
-            literature,
-            by = c("eq_class", "entrez_gene_id")
-          ) %>%
-          arrange(eq_class, entrez_gene_id)
+          unnest(data)
       }
     )
   ) %>%
   select(fp_name, fp_type, data)
-
-
-
-
-# Again checking for cases where we get contradictory results
-# combined_q1 %>%
-#   filter(tas_affinity != tas_single_dose)
-#
-# combined_q1 %>%
-#   filter(tas_affinity > tas_literature) %>%
-#   View()
 
 # Prefer results from full affinity measuremennts over the percent inhibition
 # When incorporating Verena's manual annotatations, prefer affinity data.
@@ -203,13 +204,17 @@ combined_q1_agg <- combined_q1 %>%
     data = map(
       data,
       ~.x %>%
-        mutate(
-        tas = if_else(
-          !is.na(tas_affinity),
-          tas_affinity,
-          pmin(tas_single_dose, tas_literature, na.rm = TRUE)
-        )
-      )
+        arrange(
+          fct_collapse(source, single_dose_literature = c("single_dose", "literature")) %>%
+            fct_relevel("dose_response"),
+          tas
+        ) %>%
+        group_by(
+          lspci_id, entrez_gene_id
+        ) %>%
+        slice(1) %>%
+        ungroup() %>%
+        arrange(lspci_id, entrez_gene_id)
     )
   )
 
@@ -225,7 +230,7 @@ tas_vector <- combined_q1_agg %>%
     data = map(
       data,
       ~.x %>%
-        select(lspci_id = eq_class, entrez_gene_id, starts_with("tas"))
+        select(lspci_id, entrez_gene_id, tas)
     )
   )
 
@@ -301,6 +306,13 @@ tas_vector_annotated_long <- tas_vector %>%
   ) %>%
   select(fp_name, fp_type, data)
 
+
+write_rds(
+  combined_q1_agg,
+  file.path(dir_release, "tas_vector_sources.rds"),
+  compress = "gz"
+)
+
 write_rds(
   tas_vector,
   file.path(dir_release, "tas_vector.rds"),
@@ -346,6 +358,7 @@ syn_tas_folder <- Folder("tas", parent = syn_release) %>%
   chuck("properties", "id")
 
 c(
+  file.path(dir_release, "tas_vector_sources.rds"),
   file.path(dir_release, "tas_vector.rds"),
   file.path(dir_release, "tas_vector_annotated.rds"),
   file.path(dir_release, "tas_vector_annotated_long.rds"),
