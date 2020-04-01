@@ -19,15 +19,28 @@ syn_tables <- "syn20981852"
 compounds <- syn("syn20835543") %>%
   read_rds()
 
+clinical_info <- syn("syn21064122") %>%
+  read_rds()
+
 # Compound table ---------------------------------------------------------------
 ###############################################################################T
 
 compound_tables <- compounds %>%
+  inner_join(
+    clinical_info %>%
+      rename(ci = data),
+    by = c("fp_name", "fp_type")
+  ) %>%
   mutate(
-    data = map(
-      data,
+    data = map2(
+      data, ci,
       ~.x %>%
         arrange(lspci_id) %>%
+        left_join(
+          .y %>%
+            select(lspci_id, max_phase),
+          by = "lspci_id"
+        ) %>%
         distinct(
           lspci_id,
           chembl_id,
@@ -36,7 +49,8 @@ compound_tables <- compounds %>%
           alt_names = map_chr(
             alt_names,
             ~if (is.null(.x)) NA_character_ else paste(.x, collapse = "; ")
-          )
+          ),
+          max_phase
         ) %>%
         as.data.table()
     )
