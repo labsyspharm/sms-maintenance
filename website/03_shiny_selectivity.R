@@ -56,12 +56,17 @@ combine_tables <- function(selectivity, biochemical, clinical, ...) {
     ) %>%
     left_join(
       biochemical %>%
-        select(lspci_id, gene_id = entrez_gene_id, Kd_Q1 = Q1, n_measurement_kd = n_measurement),
+        distinct(lspci_id, gene_id = entrez_gene_id, Kd_Q1 = Q1, n_measurement_kd = n_measurement),
       by = c("lspci_id", "gene_id")
     ) %>%
     left_join(
       clinical %>%
-        select(lspci_id, max_phase, first_approval),
+        group_by(lspci_id) %>%
+        summarize(
+          max_phase = max(max_phase, na.rm = TRUE) %>% {if_else(. > 4, NA_real_, .)},
+          first_approval = min(first_approval, na.rm = TRUE) %>% {if_else(. < 0, NA_real_, .)}
+        ) %>%
+        ungroup(),
       by = "lspci_id"
     ) %>%
     as.data.table()
@@ -93,11 +98,12 @@ selectivity_table <- selectivity_classes %>%
 activity <- Activity(
   name = "Wrangle selectivity table",
   used = c(
-    "syn20836653"
+    "syn20836653",
+    "syn20830834",
+    "syn21064122"
   ),
   executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/website/03_shiny_selectivity.R"
 )
-
 pwalk(
   selectivity_table,
   function(fp_name, data, ...) {
@@ -118,6 +124,38 @@ pwalk(
   }
 )
 
+
+activity <- Activity(
+  name = "Wrangle biochemical table",
+  used = c(
+    "syn20830834"
+  ),
+  executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/website/03_shiny_selectivity.R"
+)
+
+pwalk(
+  biochemical,
+  function(fp_name, data, ...) {
+    data <- data %>%
+      rename(gene_id = entrez_gene_id, Kd_Q1 = Q1, n_measurement_kd = n_measurement) %>%
+      as.data.table()
+    setkey(data, lspci_id, gene_id)
+    write_fst(
+      data,
+      file.path(dir_release, paste0("shiny_biochemical_", fp_name, ".fst"))
+    )
+    syn_fp <- synPluck(syn_tables, fp_name)
+    syn_parent <- Folder("website", parent = syn_fp) %>%
+      synStore() %>%
+      chuck("properties", "id")
+    File(
+      file.path(dir_release, paste0("shiny_biochemical_", fp_name, ".fst")),
+      parent = syn_parent,
+      name = "shiny_biochemical.fst"
+    ) %>%
+      synStore(activity = activity)
+  }
+)
 
 # Chemical probes --------------------------------------------------------------
 ###############################################################################T
