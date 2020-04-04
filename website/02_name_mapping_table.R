@@ -24,18 +24,16 @@ canonical_table <- syn("syn20835543") %>%
 gather_names <- function(d) {
   d %>%
     as.data.table() %>%
-    .[
-      ,
-      .(
-        lspci_id,
-        name = map2(
-          pref_name, alt_names,
-          ~unique(c(if (!is.na(.x)) .x, if (!is.null(.y)) .y))
-        )
-      )
-      ] %>%
-    .[!map_lgl(name, is.null)] %>%
-    .[, .(name = unlist(name)), by = lspci_id] %>%
+    {
+      .[, list(lspci_id, pref_name, alt_name = alt_names, chembl_id, hms_id)]
+    } %>%
+    melt(
+      id.vars = "lspci_id", variable.name = "source", value.name = "name", variable.factor = FALSE
+    ) %>%
+    {
+      .[, list(name = unlist(name)), by = list(lspci_id, source)][!is.na(name)]
+    } %>%
+    setkey(lspci_id, source) %>%
     as_tibble()
 }
 
@@ -52,7 +50,7 @@ activity <- Activity(
   used = c(
     "syn20835543"
   ),
-  executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/data_processing/11_prepare_website_files.R"
+  executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/website/02_name_mapping_table.R"
 )
 
 pwalk(
@@ -74,9 +72,3 @@ pwalk(
       synStore(activity = activity)
   }
 )
-
-c(
-  file.path(dir_release, "all_compounds_similarity.csv.gz"),
-  file.path(dir_release, "compound_masses.csv.gz")
-) %>%
-  synStoreMany(parentId = syn_id_mapping, activity = activity)
