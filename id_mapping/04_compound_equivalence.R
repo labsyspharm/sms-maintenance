@@ -74,10 +74,6 @@ identity_df <- bind_rows(
 
 calc_identity_classes <- function(df) {
   cmpds_identical_graph <- df %>%
-    mutate(
-      id1 = ifelse(match > query, query, match),
-      id2 = ifelse(match > query, match, query)
-    ) %>%
     distinct(id1, id2) %>%
     as.matrix() %>%
     graph_from_edgelist(directed = FALSE)
@@ -90,25 +86,36 @@ calc_identity_classes <- function(df) {
 
 assign_func <- function(x, y) mutate(x, !!sym(y) := TRUE)
 
-identity_df_combined <- identity_df %>%
+# Make sure id1 always smaller than id2
+identity_df_sorted <- identity_df %>%
+  filter(match != query) %>%
+  mutate(
+    id1 = ifelse(match > query, query, match),
+    id2 = ifelse(match > query, match, query)
+  ) %>%
+  select(-match, -query) %>%
+  distinct()
+
+identity_df_combined <- identity_df_sorted %>%
   group_nest(fp_name, fp_type) %>%
-  # Making a column for every combination that just contains true
-  # for joining later
+  # Making a column in every sub df with the fp_name
+  # as name and all TRUE as values. Used for checking
+  # which fp_name is present for which id1/id2 pair
   mutate(
     data = map2(data, fp_name, assign_func)
   ) %>%
   pull("data") %>%
-  reduce(full_join, by = c("match", "query")) %>%
+  reduce(full_join, by = c("id1", "id2")) %>%
   mutate_if(is.logical, replace_na, FALSE) %>%
   left_join(
     cmpd_mass %>%
       distinct(id, mass),
-    by = c("query" = "id")
+    by = c("id1" = "id")
   ) %>%
   left_join(
     cmpd_mass %>%
       distinct(id, mass),
-    by = c("match" = "id")
+    by = c("id2" = "id")
   ) %>%
   # If masses couldn't be calculated, assume they match...
   mutate(mass_identical = replace_na(mass.x == mass.y, TRUE)) %>%
@@ -127,9 +134,31 @@ identity_df_combined <- identity_df %>%
 
 identity_df_combined_nested <- identity_df_combined %>%
   select(-starts_with("mass")) %>%
-  gather("fp_name", "is_identical", everything(), -match, -query) %>%
+  gather("fp_name", "is_identical", everything(), -id1, -id2) %>%
   mutate(fp_type = str_split_fixed(fp_name, fixed("_"), 2)[, 1]) %>%
   filter(is_identical) %>%
+  # Augmenting identity map with data from the Chembl parent annotation
+  # These are added regardles of fingerprint or mass matches
+  bind_rows(
+    chembl_cmpds %>%
+      filter(molregno != parent_molregno) %>%
+      left_join(
+        chembl_cmpds %>%
+          select(molregno, match = chembl_id),
+        by = c("parent_molregno" = "molregno")
+      ) %>%
+      select(query = chembl_id, match) %>%
+      filter(match != query) %>%
+      mutate(
+        id1 = ifelse(match > query, query, match),
+        id2 = ifelse(match > query, match, query)
+      ) %>%
+      select(-match, -query) %>%
+      distinct() %>%
+      tidyr::crossing(
+        distinct(similarity_df, fp_name, fp_type)
+      )
+  ) %>%
   group_nest(fp_type, fp_name)
 
 cmpd_eq_classes <- identity_df_combined_nested %>%
@@ -178,7 +207,7 @@ chembl_cmpds_with_parent_eq_class <- chembl_cmpds_with_parent %>%
 # from the eq_class of the compound itself
 chembl_cmpds_with_parent_disagree <- chembl_cmpds_with_parent_eq_class %>%
   filter(eq_class != parent_eq_class)
-# Should be zero, some (~200) disagree but that shouldn't be a huge problem
+# is now zero length thanks to addition of parent annotation from chembl
 
 
 # Adding equivalence class for all compounds -----------------------------------
@@ -208,7 +237,7 @@ all_eq_class <- cmpd_eq_classes %>%
           mutate(source = "chembl"),
         hmsl_cmpds %>%
           distinct(id = hms_id) %>%
-          mutate(source = "hmsl")
+          mutate(source = "hsl")
       )
     )
   )

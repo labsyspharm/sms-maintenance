@@ -19,7 +19,7 @@ all_compounds_fingerprints <- syn("syn20692501") %>%
   read_rds() %>%
   mutate(fn = map_chr(1:n(), ~tempfile(fileext = ".fps")))
 
-cmpds_canonical <- syn("syn20692514") %>%
+cmpds_canonical <- syn("syn20821730") %>%
   read_csv()
 
 # Calculate similarity between all compounds -----------------------------------
