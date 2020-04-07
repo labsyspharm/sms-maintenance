@@ -4,7 +4,6 @@ library(tidyverse)
 library(here)
 library(synapser)
 library(synExtra)
-library(ssh)
 
 synLogin()
 syn <- synDownloader(here("tempdl"))
@@ -57,7 +56,12 @@ canonical_fp <- all_fp_df %>%
           left_join(
             lspci_id_mapping, by = "id"
           ) %>%
-          select(fp_type, fp_name, lspci_id = eq_class, fingerprint)
+          select(fp_type, fp_name, lspci_id = eq_class, fingerprint) %>%
+          # Temporary stopgap to only have one fingerprint per lspci_id
+          # Should fix upstream during eq class generation
+          group_by(fp_type, fp_name, lspci_id) %>%
+          slice(1) %>%
+          ungroup()
       }
     ) %>%
       map(distinct)
