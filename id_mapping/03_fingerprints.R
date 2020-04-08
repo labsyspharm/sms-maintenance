@@ -1,15 +1,13 @@
 library(tidyverse)
 library(httr)
 library(furrr)
-library(RPostgres)
 library(bit64)
 library(jsonlite)
 library(data.table)
 library(here)
 library(synapser)
 library(synExtra)
-
-source(here("id_mapping", "chemoinformatics_funcs.R"))
+library(lspcheminf)
 
 synLogin()
 syn <- synDownloader(here("tempdl"))
@@ -56,32 +54,31 @@ write_csv(
 
 fingerprinting_args <- tribble(
   ~fp_name, ~fp_type, ~fp_args,
-  # "morgan_chiral", "morgan", c("--useChirality", "1"),
-  # "morgan_normal", "morgan", c("--useChirality", "0"),
-  "topological_normal", "topological", NULL
+  "morgan_chiral", "morgan", list(useChirality = TRUE),
+  "morgan_normal", "morgan", list(useChirality = FALSE),
+  # "topological_normal", "topological", NULL
 )
 
 plan(multisession, workers = 10)
 cmpd_fingerprints <- compounds_canonical %>%
-  select(name = id, compound = inchi) %>%
+  distinct(name = id, compound = inchi) %>%
   # Some HMSL compounds don't report inchi or smiles or anything, should have removed
   # them earlier, removing them here now
   drop_na() %>%
-  slice(sample(nrow(.))) %>%
   # slice(1:100) %>%
-  split((seq(nrow(.)) - 1) %/% 10000) %>%
+  chunk_df(30) %>%
   enframe("index", "compounds") %>%
-  mutate(names = map(compounds, "name"), compounds = map(compounds, "compound")) %>%
+  mutate(compounds = map(compounds, ~set_names(.x[["compound"]], .x[["name"]]))) %>%
   crossing(fingerprinting_args) %>%
   mutate(
     fp_res = future_pmap(
-      select(., compounds, names, fp_type, fp_args),
-      safely(get_fingerprints),
+      select(., compounds, fp_type, fp_args),
+      ~safely(calculate_fingerprints)(..1, fingerprint_type = ..2, fingerprint_args = ..3),
       .progress = TRUE
     )
   )
 
-write_rds(cmpd_fingerprints, file.path(dir_release, "all_compounds_fingerprints_raw.rds"))
+write_rds(cmpd_fingerprints %>% select(-compounds), file.path(dir_release, "all_compounds_fingerprints_raw.rds"))
 # cmpd_fingerprints <- read_rds(file.path(dir_release, "all_compounds_fingerprints_raw.rds"))
 
 merge_fp_res <- function(fp_res) {
