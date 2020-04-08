@@ -85,7 +85,7 @@ vendor_tables_chembl <- vendor_tables %>%
 
 write_csv(
   vendor_tables_chembl,
-  file.path(dir_release, "zinc_vendors.csv.gz")
+  file.path(dir_vendor, "zinc_commercial_compounds.csv.gz")
 )
 
 # Get compound names from vendors ----------------------------------------------
@@ -100,35 +100,44 @@ cmpd_name_funcs <- list(
       stringr::str_trim()
   },
   "selleck" = function(url) {
-    Sys.sleep(2)
+    Sys.sleep(5)
     xml2::read_html(url) %>%
       rvest::html_node("td strong") %>%
       rvest::html_text() %>%
       stringr::str_trim()
   },
   "tocris" = function(url) {
-    Sys.sleep(2)
+    Sys.sleep(10)
     xml2::read_html(url) %>%
       rvest::html_node("div#content_column h1") %>%
       rvest::html_text() %>%
       stringr::str_trim()
+  },
+  "mce" = function(url) {
+    Sys.sleep(2)
+    xml2::read_html(url) %>%
+      rvest::html_node("th.s_pro_list_name a strong") %>%
+      rvest::html_text() %>%
+      stringr::str_trim()
   }
-  # "mce" = function(url, session) {
-  #   url_l <- parse_url(url)
-  #   browser()
-  #   session <- nod(session, url_l$path, verbose = TRUE)
-  #   scrape(session, query = url_l$query, verbose = TRUE) %>%
-  #     html_node("th.s_pro_list_name a strong") %>%
-  #     html_text() %>%
-  #     str_trim()
-  # }
 )
 
-# scrape_sessions <- vendor_libraries %>%
-#   {set_names(.$vendor_url, .$id)} %>%
-#   map(parse_url) %>%
-#   map(~build_url(.x %>% magrittr::inset2("path", NULL) %>% magrittr::inset2("query", NULL))) %>%
-#   map(bow)
+try_again <- function(fun, n = 3, otherwise = NA_character_, ...) {
+  i = 1
+  while (i <= n) {
+    res <- tryCatch(
+      fun(...),
+      error = function(e) {
+        warning("Error: ", e$message, " Args: ", deparse(list(...)))
+        otherwise
+      }
+    )
+    if (!identical(res, otherwise))
+      break
+    i <- i + 1
+  }
+  res
+}
 
 vendor_info_unique <- vendor_tables_chembl %>%
   filter(vendor %in% names(cmpd_name_funcs), !is.na(chembl_id)) %>%
@@ -151,8 +160,8 @@ fetch_vendor_names <- function(df) {
         function(x, y, i) {
           fun <- cmpd_name_funcs[[x]]
           fu <- future(
-            {fun(y)},
-            globals = list(fun = fun, y = y),
+            {try_again(fun, url = y, n = n)},
+            globals = list(fun = fun, y = y, try_again = try_again, n = max_tries),
             packages = "magrittr",
             lazy = TRUE
           )
@@ -161,21 +170,25 @@ fetch_vendor_names <- function(df) {
         }
       )
     )
-  futures <- list()
+  futures <- df %>%
+    group_by(vendor) %>%
+    summarize(futures = list(fu)) %>%
+    {set_names(.[["futures"]], .[["vendor"]])}
+  walk(futures, ~run(.x[[1]]))
   idx <- which(!df[["done"]])
   while(length(idx) > 0) {
-    for (i in idx) {
-      v <- df[[i, "vendor"]]
-      fu <- futures[[v]]
-      if (is.null(fu)) {
-        futures[[v]] <- df[[i, "fu"]]
-        run(futures[[v]])
-      }
-      else if(resolved(fu)) {
+    for (v in vendors) {
+      fus <- futures[[v]]
+      if (length(fus) < 1)
+        next
+      fu <- fus[[1]]
+      if(resolved(fu)) {
         fu_idx <- attr(fu, "idx", exact = TRUE)
         df[[fu_idx, "vendor_name"]] <- value(fu)
         df[[fu_idx, "done"]] <- TRUE
-        futures[[v]] <- NULL
+        futures[[v]] <- fus[-1]
+        if (length(fus) > 1)
+          run(fus[[2]])
         message(fu_idx, "done")
       }
     }
@@ -186,44 +199,35 @@ fetch_vendor_names <- function(df) {
   df
 }
 
-vendor_names <- fetch_vendor_names(
+vendor_names_result <- fetch_vendor_names(
   vendor_info_unique %>%
     {.[sample(seq_len(length(.)), length(.))]}
 )
 
-  mutate(
-    vendor_name = future_map2_chr(
-      vendor, vendor_url,
-      function(x, y) {
-        ret <- possibly(cmpd_name_funcs[[x]], NA_character_)(y)
-        message(if (is.na(ret)) "fail" else "success")
-        Sys.sleep(2)
-        ret
-      },
-      .progress = TRUE
-    )
-  )
-
-
-
-vendor_tables_lscpi <- compound_mapping %>%
-  mutate(
-    data = map(
-      data,
-      ~left_join(vendor_tables_chembl, select(.x, id, lspci_id), by = c("chembl_id" = "id")) %>%
-        select(-inchi_key, -chembl_id, -zinc_id, -notes) %>%
-        left_join(select(vendor_libraries, id, vendor_url), by = c("vendor" = "id")) %>%
-        # Some Chembl IDs can't be mapped because they are no longer used
-        # in the current version, removing those
-        drop_na(lspci_id) %>%
-        distinct()
-    )
-  )
+vendor_names <- vendor_names_result %>%
+  select(-done, -fu) %>%
+  drop_na(vendor_name)
 
 write_rds(
-  vendor_tables_lscpi,
-  file.path(dir_release, "compound_commercial_info_zinc.rds"),
-  compress = "gz"
+  vendor_names_result,
+  file.path(dir_vendor, "zinc_vendor_names.rds")
+)
+write_csv(
+  vendor_names,
+  file.path(dir_vendor, "zinc_vendor_names.csv.gz")
+)
+
+vendor_names_chembl <- vendor_tables_chembl %>%
+  left_join(
+    vendor_names %>%
+      select(vendor, vendor_id, vendor_name),
+    by = c("vendor", "vendor_id")
+  ) %>%
+  drop_na(chembl_id)
+
+write_csv(
+  vendor_names_chembl,
+  file.path(dir_vendor, "zinc_vendor_names_chembl.csv.gz"),
 )
 
 # Store to synapse -------------------------------------------------------------
@@ -244,6 +248,8 @@ syn_zinc <- Folder("zinc", parent = "syn20830877") %>%
   chuck("properties", "id")
 
 c(
-  file.path(dir_release, "zinc_vendors.csv.gz")
+  file.path(dir_vendor, "zinc_commercial_compounds.csv.gz"),
+  file.path(dir_vendor, "zinc_vendor_names.csv.gz"),
+  file.path(dir_vendor, "zinc_vendor_names_chembl.csv.gz")
 ) %>%
   synStoreMany(parentId = syn_zinc, activity = wrangle_activity)
