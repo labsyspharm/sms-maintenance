@@ -1,10 +1,11 @@
 library(tidyverse)
 library(synapser)
 library(synExtra)
-# library(furrr)
-# library(httr)
-# library(rvest)
-# library(polite)
+library(furrr)
+library(httr)
+library(future)
+library(rvest)
+library(polite)
 library(here)
 
 synLogin()
@@ -17,12 +18,11 @@ release <- "chembl_v25"
 dir_release <- here(release)
 syn_release <- synFindEntityId(release, "syn18457321")
 
-# compound_mapping <- syn("syn20934414") %>%
-#   read_rds()
-#
 chembl_zinc_mapping <- syn("syn21572663") %>%
   read_csv()
 
+dir_vendor <- file.path(dir_release, "vendor")
+dir.create(dir_vendor, showWarnings = FALSE)
 
 # Fetch vendor info from ZINC --------------------------------------------------
 ###############################################################################T
@@ -44,19 +44,19 @@ vendor_libraries <- tribble(
 pwalk(
   vendor_libraries,
   function(codemap_url, info_url, id, ...) {
-    download.file(codemap_url, file.path(tempdir(), paste0("codemap_", id, ".txt.gz")))
-    download.file(info_url, file.path(tempdir(), paste0("info_", id, ".txt.gz")))
+    download.file(codemap_url, file.path(dir_vendor, paste0("codemap_", id, ".txt.gz")))
+    download.file(info_url, file.path(dir_vendor, paste0("info_", id, ".txt.gz")))
   }
 )
 
 vendor_tables <- vendor_libraries %>%
   transmute(
     id,
-    codemap = map(id, ~read_delim(file.path(tempdir(), paste0("codemap_", .x, ".txt.gz")), delim = " ", col_names = c("zinc_id", "vendor_id"), col_types = "cc")),
+    codemap = map(id, ~read_delim(file.path(dir_vendor, paste0("codemap_", .x, ".txt.gz")), delim = " ", col_names = c("zinc_id", "vendor_id"), col_types = "cc")),
     info = map2(
       id, vendor_url,
       ~read_tsv(
-        file.path(tempdir(), paste0("info_", .x, ".txt.gz")),
+        file.path(dir_vendor, paste0("info_", .x, ".txt.gz")),
         col_names = c("vendor_id", "zinc_id", "inchi_key", "tranche", "notes"),
         col_types = "ccccc"
       ) %>%
@@ -67,10 +67,10 @@ vendor_tables <- vendor_libraries %>%
   )
 
 # Mapping from Zinc IDs to Chembl provided by Zinc directly
-download.file("http://files.docking.org/catalogs/1/chembl23/chembl23.codemap.txt.gz", file.path(tempdir(), "codemap_chembl23.txt.gz"))
-chembl_codemap <- read_delim(file.path(tempdir(), "codemap_chembl23.txt.gz"), delim = " ", col_names = c("zinc_id", "chembl_id"), col_types = "cc")
+download.file("http://files.docking.org/catalogs/1/chembl23/chembl23.codemap.txt.gz", file.path(dir_vendor, "codemap_chembl23.txt.gz"))
+chembl_codemap <- read_delim(file.path(dir_vendor, "codemap_chembl23.txt.gz"), delim = " ", col_names = c("zinc_id", "chembl_id"), col_types = "cc")
 
-zinc_mapping <- chembl_zinc %>%
+zinc_mapping <- chembl_zinc_mapping %>%
   select(-uci) %>%
   bind_rows(chembl_codemap) %>%
   distinct()
@@ -90,68 +90,141 @@ write_csv(
 
 # Get compound names from vendors ----------------------------------------------
 ###############################################################################T
-#
-# cmpd_name_funcs <- list(
-#   "targetmol" = function(url, session) {
-#     # browser()
-#     url_l <- parse_url(url)
-#     session <- nod(session, url_l$path, verbose = TRUE)
-#     scrape(session, query = url_l$query, verbose = TRUE) %>%
-#       html_node(".cpdtitle h1") %>%
-#       html_text() %>%
-#       str_trim()
-#   },
-#   "selleck" = function(url, session) {
-#     url_l <- parse_url(url)
-#     session <- nod(session, url_l$path, verbose = TRUE)
-#     scrape(session, query = url_l$query, verbose = TRUE) %>%
-#       html_node("td strong") %>%
-#       html_text() %>%
-#       str_trim()
-#   }
-# )
-#
+
+cmpd_name_funcs <- list(
+  "targetmol" = function(url) {
+    Sys.sleep(2)
+    xml2::read_html(url) %>%
+      rvest::html_node(".cpdtitle h1") %>%
+      rvest::html_text() %>%
+      stringr::str_trim()
+  },
+  "selleck" = function(url) {
+    Sys.sleep(2)
+    xml2::read_html(url) %>%
+      rvest::html_node("td strong") %>%
+      rvest::html_text() %>%
+      stringr::str_trim()
+  },
+  "tocris" = function(url) {
+    Sys.sleep(2)
+    xml2::read_html(url) %>%
+      rvest::html_node("div#content_column h1") %>%
+      rvest::html_text() %>%
+      stringr::str_trim()
+  }
+  # "mce" = function(url, session) {
+  #   url_l <- parse_url(url)
+  #   browser()
+  #   session <- nod(session, url_l$path, verbose = TRUE)
+  #   scrape(session, query = url_l$query, verbose = TRUE) %>%
+  #     html_node("th.s_pro_list_name a strong") %>%
+  #     html_text() %>%
+  #     str_trim()
+  # }
+)
+
 # scrape_sessions <- vendor_libraries %>%
 #   {set_names(.$vendor_url, .$id)} %>%
 #   map(parse_url) %>%
 #   map(~build_url(.x %>% magrittr::inset2("path", NULL) %>% magrittr::inset2("query", NULL))) %>%
 #   map(bow)
-#
-# # Runs really slowly
-# plan(sequential)
-# vendor_cmpd_names <- vendor_tables_chembl %>%
-#   filter(vendor %in% names(cmpd_name_funcs)) %>%
-#   distinct(vendor, vendor_id, vendor_url) %>%
-#   # group_by(vendor) %>%
-#   # slice(10) %>%
-#   # ungroup() %>%
-#   mutate(
-#     vendor_name = future_map2_chr(
-#       vendor, vendor_url,
-#       ~possibly(cmpd_name_funcs[[.x]], NA_character_)(.y, session = scrape_sessions[[.x]]),
-#       .progress = TRUE
-#     )
-#   )
-#
-# vendor_tables_lscpi <- compound_mapping %>%
-#   mutate(
-#     data = map(
-#       data,
-#       ~left_join(vendor_tables_chembl, select(.x, id, lspci_id), by = c("chembl_id" = "id")) %>%
-#         select(-inchi_key, -chembl_id, -zinc_id, -notes) %>%
-#         left_join(select(vendor_libraries, id, vendor_url), by = c("vendor" = "id")) %>%
-#         # Some Chembl IDs can't be mapped because they are no longer used
-#         # in the current version, removing those
-#         drop_na(lspci_id) %>%
-#         distinct()
-#     )
-#   )
-#
-# write_rds(
-#   vendor_tables_lscpi,
-#   file.path(dir_release, "compound_commercial_info_zinc.rds"),
-#   compress = "gz"
-# )
+
+vendor_info_unique <- vendor_tables_chembl %>%
+  filter(vendor %in% names(cmpd_name_funcs), !is.na(chembl_id)) %>%
+  distinct(vendor, vendor_id, vendor_url)
+
+max_tries <- 3
+
+# Runs really slowly
+fetch_vendor_names <- function(df) {
+  plan(multisession(workers = 3))
+  if (!"vendor_name" %in% colnames(df)) {
+    df[["vendor_name"]] <- NA_character_
+  }
+  vendors <- unique(df[["vendor"]])
+  df <- df %>%
+    mutate(
+      done = !is.na(df[["vendor_name"]]),
+      fu = pmap(
+        list(vendor, vendor_url, seq_len(nrow(.))),
+        function(x, y, i) {
+          fun <- cmpd_name_funcs[[x]]
+          fu <- future(
+            {fun(y)},
+            globals = list(fun = fun, y = y),
+            packages = "magrittr",
+            lazy = TRUE
+          )
+          attr(fu, "idx") <- i
+          fu
+        }
+      )
+    )
+  futures <- list()
+  idx <- which(!df[["done"]])
+  while(length(idx) > 0) {
+    for (i in idx) {
+      v <- df[[i, "vendor"]]
+      fu <- futures[[v]]
+      if (is.null(fu)) {
+        futures[[v]] <- df[[i, "fu"]]
+        run(futures[[v]])
+      }
+      else if(resolved(fu)) {
+        fu_idx <- attr(fu, "idx", exact = TRUE)
+        df[[fu_idx, "vendor_name"]] <- value(fu)
+        df[[fu_idx, "done"]] <- TRUE
+        futures[[v]] <- NULL
+        message(fu_idx, "done")
+      }
+    }
+    Sys.sleep(0.1)
+    idx <- which(!df[["done"]])
+    message("remaining", length(idx))
+  }
+  df
+}
+
+vendor_names <- fetch_vendor_names(
+  vendor_info_unique %>%
+    {.[sample(seq_len(length(.)), length(.))]}
+)
+
+  mutate(
+    vendor_name = future_map2_chr(
+      vendor, vendor_url,
+      function(x, y) {
+        ret <- possibly(cmpd_name_funcs[[x]], NA_character_)(y)
+        message(if (is.na(ret)) "fail" else "success")
+        Sys.sleep(2)
+        ret
+      },
+      .progress = TRUE
+    )
+  )
+
+
+
+vendor_tables_lscpi <- compound_mapping %>%
+  mutate(
+    data = map(
+      data,
+      ~left_join(vendor_tables_chembl, select(.x, id, lspci_id), by = c("chembl_id" = "id")) %>%
+        select(-inchi_key, -chembl_id, -zinc_id, -notes) %>%
+        left_join(select(vendor_libraries, id, vendor_url), by = c("vendor" = "id")) %>%
+        # Some Chembl IDs can't be mapped because they are no longer used
+        # in the current version, removing those
+        drop_na(lspci_id) %>%
+        distinct()
+    )
+  )
+
+write_rds(
+  vendor_tables_lscpi,
+  file.path(dir_release, "compound_commercial_info_zinc.rds"),
+  compress = "gz"
+)
 
 # Store to synapse -------------------------------------------------------------
 ###############################################################################T
