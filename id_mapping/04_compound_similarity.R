@@ -4,6 +4,8 @@ library(here)
 library(synapser)
 library(synExtra)
 library(lspcheminf)
+library(arrangements)
+library(future.apply)
 
 synLogin()
 syn <- synDownloader(here("tempdl"))
@@ -15,37 +17,69 @@ syn_release <- synFindEntityId(release, "syn18457321")
 # Loading files ----------------------------------------------------------------
 ###############################################################################T
 
-all_compounds_fingerprints <- syn("syn20692501") %>%
-  read_rds() %>%
-  mutate(fn = map_chr(1:n(), ~tempfile(fileext = ".fps")))
-
 cmpds_canonical <- syn("syn20821730") %>%
   read_csv()
+
+all_compounds_fingerprints <- syn("syn20692501") %>%
+  read_rds()
 
 # Calculate similarity between all compounds -----------------------------------
 ###############################################################################T
 
-all_compounds_fingerprints %>%
-  # Adding a newline char at the end
-  {pwalk(list(.$fingerprint_db, .$fn), write_lines)}
-
-plan(multisession(workers = 4))
+plan(multicore(workers = 3))
+options(future.globals.maxSize = 2*2**30)
 similarity_res <- all_compounds_fingerprints %>%
-  filter(fp_name == "topological_normal") %>%
   mutate(
-    fp_matches = future_map(fn, scan_fingerprint_matches, threshold = 0.9999)
+    data = data %>%
+      map(
+        ~set_names(.x[["fingerprint"]], .x[["id"]])
+      ) %>%
+      future_lapply(
+        function(fps) {
+          chemical_similarity_threshold(
+            fps,
+            threshold = 0.9999,
+            precalculated = TRUE,
+            n_threads = 6
+          )
+        },
+        future.scheduling = 1,
+        future.packages = "lspcheminf"
+      )
   )
 
-write_rds(similarity_res, file.path(dir_release, "all_compounds_similarity_raw.rds"))
-# similarity_res <- read_rds(file.path(dir_release, "all_compounds_similarity_raw.rds"))
+# Reorder query and match such that query is always smaller than match
+reorder_matches <- function(df) {
+  df %>%
+    mutate(
+      ordered = map2(
+        query, target,
+        c
+      ) %>%
+        map(sort)
+    ) %>%
+    transmute(
+      query = map_chr(ordered, 1),
+      target = map_chr(ordered, 2),
+      score
+    )
+}
 
-similarity_df <- similarity_res %>%
-  mutate_at(vars(fp_matches), map, as_tibble) %>%
-  select(-skipped, -fingerprint_db, -fn) %>%
-  unnest(fp_matches) %>%
-  mutate(score = as.double(score))
+similarity_res_ordered <- similarity_res %>%
+  mutate(
+    data = map(
+      data,
+      reorder_matches
+    )
+  )
 
-write_csv(similarity_df, file.path(dir_release, "all_compounds_similarity.csv.gz"))
+write_rds(
+  similarity_res_ordered,
+  file.path(dir_release, "all_compounds_similarity.rds"),
+  compress = "gz"
+)
+# similarity_res_ordered <- read_rds(file.path(dir_release, "all_compounds_similarity.rds"))
+
 
 # Calculate compound mass -----------------------------------
 ###############################################################################T
@@ -53,14 +87,14 @@ write_csv(similarity_df, file.path(dir_release, "all_compounds_similarity.csv.gz
 # To establish identity between compounds, require that the topological FP
 # matches and one of the Morgan FPs and that their molecular mass is identical
 
-plan(multisession(workers = 4))
+plan(multicore(workers = 18))
 cmpd_mass_raw <- cmpds_canonical %>%
   distinct(inchi) %>%
   drop_na(inchi) %>%
-  chunk_df(12) %>%
+  chunk_df(18*3) %>%
   future_map(
     ~molecular_mass(
-      set_names(.x$inchi)
+      set_names(.x[["inchi"]])
     ),
     .progress = TRUE
   ) %>%
@@ -88,7 +122,8 @@ write_csv(
 activity <- Activity(
   name = "Calculate chemical similarity between all compounds",
   used = c(
-    "syn20692501"
+    "syn20692501",
+    "syn20821730"
   ),
   executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/id_mapping/04_compound_similarity.R"
 )
@@ -98,7 +133,7 @@ syn_id_mapping <- Folder("id_mapping", parent = syn_release) %>%
   chuck("properties", "id")
 
 c(
-  file.path(dir_release, "all_compounds_similarity.csv.gz"),
+  file.path(dir_release, "all_compounds_similarity.rds"),
   file.path(dir_release, "compound_masses.csv.gz")
 ) %>%
   synStoreMany(parentId = syn_id_mapping, activity = activity)
