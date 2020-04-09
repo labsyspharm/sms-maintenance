@@ -18,55 +18,33 @@ syn_release <- synFindEntityId(release, "syn18457321")
 # Prepare fingerprint database -------------------------------------------------
 ###############################################################################T
 
+
 all_fp <- syn("syn20692501") %>%
   read_rds()
 
-eq_classes <- syn("syn20830516") %>%
+canonical_compounds <- syn("syn20835543") %>%
   read_rds()
 
-all_fp_df <- all_fp %>%
+all_fp_flat <- all_fp %>%
+  unnest(data)
+
+canonical_fp <- canonical_compounds %>%
   mutate(
-    fp_df = map(
-      fingerprint_db,
-      read_tsv,
-      comment = "#",
-      col_names = c("fingerprint", "id"),
-      col_types = "cc"
+    data = map(
+      data,
+      ~.x %>%
+        select(lspci_id, chembl_id, hms_id) %>%
+        gather("source", "id", hms_id, chembl_id) %>%
+        # Prefer Chembl if present
+        mutate(source = factor(source, levels = c("chembl_id", "hms_id"))) %>%
+        group_by(lspci_id) %>%
+        arrange(source, .by_group = TRUE) %>%
+        slice(1) %>%
+        ungroup() %>%
+        left_join(all_fp_flat, by = "id") %>%
+        select(lspci_id, fp_name, fp_type, fingerprint)
     )
   )
-
-# Here annotating the
-canonical_fp <- all_fp_df %>%
-  select(fp_name, fp_type, fp_df) %>%
-  left_join(eq_classes %>% rename(lspci_id_mapping = data)) %>%
-  mutate(
-    fp_df = map2(
-      fp_df, lspci_id_mapping,
-      function(fp_df, lspci_id_mapping) {
-        eq_classes %>%
-          mutate(
-            fp_df = map(
-              data,
-              ~left_join(fp_df, .x, by = "id") %>%
-                select(id, fingerprint)
-            )
-          ) %>%
-          select(-data) %>%
-          unnest(fp_df) %>%
-          left_join(
-            lspci_id_mapping, by = "id"
-          ) %>%
-          select(fp_type, fp_name, lspci_id = eq_class, fingerprint) %>%
-          # Temporary stopgap to only have one fingerprint per lspci_id
-          # Should fix upstream during eq class generation
-          group_by(fp_type, fp_name, lspci_id) %>%
-          slice(1) %>%
-          ungroup()
-      }
-    ) %>%
-      map(distinct)
-  ) %>%
-  select(fp_type, fp_name, data = fp_df)
 
 write_rds(
   canonical_fp,
@@ -81,7 +59,7 @@ fp_table_activity <- Activity(
   name = "Create table of molecular fingerprints",
   used = c(
     "syn20692501",
-    "syn20830516"
+    "syn20835543"
   ),
   executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/id_mapping/07_fingerprint_table.R"
 )
