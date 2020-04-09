@@ -56,10 +56,10 @@ fingerprinting_args <- tribble(
   ~fp_name, ~fp_type, ~fp_args,
   "morgan_chiral", "morgan", list(useChirality = TRUE),
   "morgan_normal", "morgan", list(useChirality = FALSE),
-  # "topological_normal", "topological", NULL
+  "topological_normal", "topological", NULL
 )
 
-plan(multisession, workers = 10)
+plan(multicore, workers = 10)
 cmpd_fingerprints <- compounds_canonical %>%
   distinct(name = id, compound = inchi) %>%
   # Some HMSL compounds don't report inchi or smiles or anything, should have removed
@@ -81,46 +81,28 @@ cmpd_fingerprints <- compounds_canonical %>%
 write_rds(cmpd_fingerprints %>% select(-compounds), file.path(dir_release, "all_compounds_fingerprints_raw.rds"))
 # cmpd_fingerprints <- read_rds(file.path(dir_release, "all_compounds_fingerprints_raw.rds"))
 
-merge_fp_res <- function(fp_res) {
-  fingerprint_db_lines <- map(fp_res, pluck, "result", "fingerprint_db") %>%
-    # split into lines
-    map(stringi::stri_split_lines1)
-  fingerprint_fps_combined <- c(
-    # Keep first file including header
-    fingerprint_db_lines[[1]],
-    # Remaining lines from all files without headers
-    fingerprint_db_lines[-1] %>%
-      # In all following files, discard  header (lines starting with #)
-      map(~.x[!str_starts(.x, fixed("#"))]) %>%
-      # merge all remaining lines
-      {do.call(c, .)}
-  )
-
-  list(
-    skipped = do.call(c, map(fp_res, pluck, "result", "skipped")),
-    fingerprint_db = fingerprint_fps_combined,
-    error = do.call(c, map(fp_res, pluck, "error"))
-  )
-}
+# Check if any errors occured
+map(cmpd_fingerprints[["fp_res"]], "error") %>% map_lgl(is.null) %>% all()
+# TRUE
+# None occured
 
 cmpd_fingerprints_all <- cmpd_fingerprints %>%
-  group_by(fp_name, fp_type) %>%
-  summarize(
-    result = list(merge_fp_res(fp_res))
+  transmute(
+    fp_name,
+    fp_type,
+    fp_res = map(fp_res, "result")
   ) %>%
-  ungroup() %>%
-  unnest_wider(result)
+  unnest(fp_res) %>%
+  rename(id = names, fingerprint = fingerprints) %>%
+  group_nest(fp_name, fp_type)
 
-# Check if any jobs errored out
-cmpd_fingerprints %>%
-  pull("error") %>%
-  map(is.null) %>%
-  as.logical() %>%
-  all()
 
-skipped_cmpds <- cmpd_fingerprints_all %>%
-  unnest(skipped) %>%
-  select(-fingerprint_db)
+skipped_cmpds <- compounds_canonical %>%
+  anti_join(
+    cmpd_fingerprints_all %>%
+      unnest(data),
+    by = "id"
+  )
 
 write_csv(skipped_cmpds, file.path(dir_release, "all_compounds_fingerprints_skipped.csv"))
 
@@ -128,14 +110,6 @@ write_rds(
   cmpd_fingerprints_all,
   file.path(dir_release, "all_compounds_fingerprints.rds")
 )
-cmpd_fingerprints_all %>%
-  mutate(
-    fn = file.path(
-      dir_release,
-      paste0(paste("all_compounds_fingerprints_fp_type", fp_type, "fp_name", fp_name, sep = "_"), ".fps")
-    )
-  ) %>%
-  {walk2(.$fingerprint_db, .$fn, write_lines)}
 
 # Store to synapse -------------------------------------------------------------
 ###############################################################################T
@@ -155,7 +129,7 @@ fp_folder <- Folder("fingerprints", syn_release) %>%
 
 c(
   file.path(dir_release, "all_compounds_fingerprints.rds"),
-  Sys.glob(file.path(dir_release, "all_compounds_fingerprints*fps")),
-  file.path(dir_release, "all_compounds_canonical.csv.gz")
+  file.path(dir_release, "all_compounds_canonical.csv.gz"),
+  file.path(dir_release, "all_compounds_fingerprints_skipped.csv")
 ) %>%
   synStoreMany(parent = fp_folder, activity = fingerprint_activity)
