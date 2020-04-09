@@ -26,7 +26,7 @@ chembl_cmpds <- syn("syn20692440") %>%
 eq_classes <- syn("syn20830516") %>%
   read_rds()
 
-pubchem_names <- syn("syn21572728") %>%
+vendor_names <- syn("syn21901782") %>%
   read_csv()
 
 chembl_canonical <- syn("syn20692439") %>%
@@ -40,10 +40,11 @@ hmsl_canonical <- syn("syn20692442") %>%
 
 # Find canonical member of equivalence class
 # 1. Choose member with highest clinical phase
-# 2. Choose member with annotated pref_name
-# 3. If present, choose member annotated as parent by Chembl
-# 4. Choose member with highest n_assays
-# 5. Choose member with lowest id (chembl or HMS)
+# 2. Choose member that is commercially available
+# 3. Choose member with annotated pref_name
+# 4. If present, choose member annotated as parent by Chembl
+# 5. Choose member with highest n_assays
+# 6. Choose member with lowest id (chembl or HMS)
 find_canonical_member <- function(eq_class_df, compound_df) {
   eq_class_df %>%
     left_join(
@@ -62,20 +63,21 @@ find_canonical_member <- function(eq_class_df, compound_df) {
         annotated_assays = replace_na(n_assays, 0),
         id_number = as.integer(str_extract(id, "\\d+"))
       ),
-      keyby = eq_class
+      by = eq_class
     ] %>%
     .[
       order(
         eq_class,
         -max_phase,
+        -commercially_available,
         -annotated_pref_name,
         -annotated_as_parent,
         -annotated_assays,
         -id_number
       ),
       head(.SD, 1),
-      keyby = .(eq_class, source)
-      ]
+      by = .(eq_class, source)
+    ]
 }
 
 canonical_members <- eq_classes %>%
@@ -89,13 +91,17 @@ canonical_members <- eq_classes %>%
           mutate_if(is.integer64, as.integer),
         hmsl_cmpds %>%
           select(id = hms_id, pref_name = name, n_assays = n_batches),
-      )
+      ) %>%
+        mutate(
+          commercially_available = id %in% vendor_names[["chembl_id"]]
+        )
     )
   )
 
 write_rds(
   canonical_members,
-  file.path(dir_release, "canonical_members.rds")
+  file.path(dir_release, "canonical_members.rds"),
+  compress = "gz"
 )
 # canonical_members <- read_rds(
 #   file.path(dir_release, "canonical_members.rds")
@@ -114,9 +120,6 @@ all_names <- list(
       )
     ) %>%
     unchop(name),
-  "pubchem" = pubchem_names %>%
-    select(id = chembl_id, name) %>%
-    filter(str_starts(name, "S?CHEMBL", negate = TRUE)),
   "hmsl" = hmsl_cmpds %>%
     transmute(
       id = hms_id,
@@ -125,12 +128,14 @@ all_names <- list(
         ~c(if (!is.na(.x)) .x, if (!is.null(.y)) .y)
       )
     ) %>%
-    unchop(name)
+    unchop(name),
+  "vendor" = vendor_names %>%
+    distinct(id = chembl_id, name = vendor_name)
 ) %>%
   bind_rows(.id = "source") %>%
   # Arrange sources by most to least trust-worthy
   mutate(
-    source = factor(source, levels = c("chembl", "hmsl", "pubchem"))
+    source = factor(source, levels = c("vendor", "chembl", "hmsl"))
   ) %>%
   arrange(id, source) %>%
   distinct()
@@ -365,7 +370,7 @@ canonical_table %>%
 # 15 topological_normal topological TRUE   TRUE      TRUE                 304
 
 # Only 1 compounds frorm HMSL not mapped to Chembl that where found in previous
-# version. But 1567 additional compounds in new version (in non-chiral mode)
+# version. But 1644 additional compounds in new version (in non-chiral mode)
 
 # Making non-canonical compound table ------------------------------------------
 ###############################################################################T
@@ -406,9 +411,9 @@ cmpd_wrangling_activity <- Activity(
     "syn20692440",
     "syn20692514",
     "syn20830516",
-    "syn21572728",
     "syn20692439",
-    "syn20692442"
+    "syn20692442",
+    "syn21901782"
   ),
   executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/id_mapping/04_compound_id_mapping.R"
 )
