@@ -16,8 +16,8 @@ syn_release <- synFindEntityId(release, "syn18457321")
 # Loading files ----------------------------------------------------------------
 ###############################################################################T
 
-similarity_df <- syn("syn20692550") %>%
-  read_csv()
+similarity_df <- syn("syn21904674") %>%
+  read_rds()
 
 hmsl_cmpds <- syn("syn20692443") %>%
   read_rds()
@@ -34,35 +34,41 @@ cmpd_mass <- syn("syn21572844") %>%
 # Only done for compounds where for some reason no comparison based on molecular
 # fingerprint was possible. Eg. no Inchi was provided in Reagent Tracker
 
-hmsl_name_matches <- hmsl_cmpds %>%
-  filter(
-    !(hms_id %in% (
-      similarity_df %>%
-        filter(str_starts(query, "HMSL"), str_starts(match, "CHEMBL")) %>%
-        pull(query) %>%
-        unique()
-    )
-    )
-  ) %>%
+
+hmsl_name_matches <- similarity_df %>%
   mutate(
-    name = str_to_lower(name)
-  ) %>%
-  select(-chembl_id) %>%
-  left_join(
-    chembl_cmpds %>%
-      transmute(chembl_id, pref_name = str_to_lower(pref_name)),
-    by = c("name" = "pref_name")
-  ) %>%
-  drop_na(chembl_id)
+    data = map(
+      data,
+      ~hmsl_cmpds %>%
+        filter(
+          !hms_id %in% (
+            .x %>%
+              # similarity_df is presorted so that query < target
+              # therefore HMSL ids must always be in target
+              filter(str_starts(query, fixed("CHEMBL")), str_starts(target, fixed("HMSL"))) %>%
+              pull(target)
+          )
+        ) %>%
+        mutate(
+          name = str_to_lower(name)
+        ) %>%
+        select(-chembl_id) %>%
+        left_join(
+          chembl_cmpds %>%
+            transmute(chembl_id, pref_name = str_to_lower(pref_name)),
+          by = c("name" = "pref_name")
+        ) %>%
+        drop_na(chembl_id) %>%
+        distinct(query = chembl_id, match = hms_id)
+    )
+  )
 
 identity_df <- bind_rows(
   similarity_df %>%
-    select(-score),
+    unnest(data) %>%
+    select(fp_name, fp_type, query, match = target),
   hmsl_name_matches %>%
-    select(query = hms_id, match = chembl_id) %>%
-    tidyr::crossing(
-      distinct(similarity_df, fp_name, fp_type)
-    )
+    unnest(data)
 )
 
 # Defining equivalence classes -------------------------------------------------
@@ -237,7 +243,7 @@ all_eq_class <- cmpd_eq_classes %>%
           mutate(source = "chembl"),
         hmsl_cmpds %>%
           distinct(id = hms_id) %>%
-          mutate(source = "hsl")
+          mutate(source = "hmsl")
       )
     )
   )
@@ -254,7 +260,7 @@ write_rds(
 activity <- Activity(
   name = "Calculate compound equivalence classes",
   used = c(
-    "syn20692550",
+    "syn21904674",
     "syn20692443",
     "syn20692440",
     "syn21572844"
