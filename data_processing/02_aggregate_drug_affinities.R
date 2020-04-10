@@ -375,7 +375,8 @@ aggregation_activity <- Activity(
     "syn20692433",
     "syn20693825",
     "syn20693827",
-    "syn20830516"
+    "syn20830516",
+    "syn21652213"
   ),
   executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/data_processing/02_aggregate_drug_affinities.R"
 )
