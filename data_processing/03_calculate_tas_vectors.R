@@ -23,6 +23,19 @@ complete_dose_response_Q1 <- syn("syn20830834") %>%
 complete_single_dose_Q1 <- syn("syn20830836") %>%
   read_rds()
 
+cmpd_eq_classes <- syn("syn20830516") %>%
+  read_rds()
+
+literature_annotations_raw <- syn("syn20694521") %>%
+  read_csv(col_types = "ii___________________") %>%
+  mutate(hms_id = paste0("HMSL", hms_id))
+
+gene_map <- syn("syn20693721") %>%
+  read_csv(col_types = "ciciccciccccc")
+
+compound_map <- syn("syn20835543") %>%
+  read_rds()
+
 # Checking if all target/compound combinations are unique
 complete_dose_response_Q1 %>%
   unnest(data) %>%
@@ -42,12 +55,7 @@ complete_single_dose_Q1 %>%
 # <int>  <int>
 #   1     1 196194
 
-cmpd_eq_classes <- syn("syn20830516") %>%
-  read_rds()
 
-literature_annotations_raw <- syn("syn20694521") %>%
-  read_csv(col_types = "ii___________________") %>%
-  mutate(hms_id = paste0("HMSL", hms_id))
 
 literature_annotations <- cmpd_eq_classes %>%
   mutate(
@@ -218,12 +226,6 @@ combined_q1_agg <- combined_q1 %>%
     )
   )
 
-
-gene_map <- syn("syn20693721") %>%
-  read_csv(col_types = "ciciccciccccc")
-
-compound_map <- syn("syn20835543") %>%
-  read_rds()
 
 tas_vector <- combined_q1_agg %>%
   mutate(
