@@ -20,11 +20,8 @@ release <- "chembl_v25"
 dir_release <- here(release)
 syn_release <- synFindEntityId(release, "syn18457321")
 
-pheno_data_raw <- syn("syn20841032") %>%
+pheno_data <- syn("syn20841032") %>%
   read_rds()
-
-pheno_data <- pheno_data_raw %>%
-  mutate(data = map(data, rename, lspci_id = eq_class))
 
 # convert assay results to r-scores --------------------------------------------
 ###############################################################################T
@@ -49,7 +46,7 @@ calculate_r_score_per_assay <- function(df) {
 }
 
 calculate_r_score <- function(df) {
-  plan(multisession(workers = 8))
+  plan(multicore(workers = 8))
   df %>%
     group_nest(assay_id) %>%
     mutate(
@@ -82,128 +79,6 @@ write_rds(
   file.path(dir_release, "pheno_data_rscores.rds"),
   compress = "gz"
 )
-
-# rscores <- read_rds(file.path(dir_release, "pheno_data_rscores.rds"))
-
-# Calculate number of shared assays for each drug combination ------------------
-###############################################################################T
-
-create_sparse_mat <- function(df) {
-  coords <- df %>%
-    mutate(
-      i = as.factor(assay_id),
-      j = as.factor(lspci_id)
-    )
-  sparseMatrix(
-    as.integer(coords$i), as.integer(coords$j),
-    x = coords$rscore_tr,
-    dimnames = list(
-      "assays" = levels(coords$i),
-      "compounds" = levels(coords$j)
-    )
-  )
-}
-
-rscore_both_active <- rscores %>%
-  mutate(
-    data = map(
-      data,
-      ~.x %>%
-        filter(is.finite(rscore_tr), abs(rscore_tr) > 2.5) %>%
-        group_by(assay_id) %>%
-        filter(n() > 5) %>%
-        ungroup()
-    )
-  )
-
-rscore_both_active_sparse_mat <- rscore_both_active %>%
-  mutate(
-    data = map(
-      data,
-      create_sparse_mat
-    )
-  )
-
-calculate_adjacency_matrix <- function(mat) {
-  mat_b <- mat
-  mat_b@x <- rep(1, length(mat_b@x))
-  Matrix::crossprod(mat_b)
-}
-
-# The adjacency matrix records how many assays are overlapping for
-# each compound-compound pair
-# We will filter the cosine distances based on the number of overlapping assays
-
-pfp_adjacency_mat <- rscore_both_active_sparse_mat %>%
-  mutate(
-    data = map(
-      data,
-      calculate_adjacency_matrix
-    )
-  )
-
-write_rds(
-  pfp_adjacency_mat,
-  file.path(dir_release, "pfp_sim_adjacency_raw.rds"),
-  compress = "gz"
-)
-
-pwalk(
-  pfp_adjacency_mat,
-  function(fp_name, data, ...) {
-    write_rds(
-      data,
-      file.path(dir_release, paste0("pfp_sim_adjacency_raw_", fp_name, ".rds")),
-      compress = "gz"
-    )
-  }
-)
-
-# pfp_adjacency_mat <- read_rds(file.path(dir_release, "pfp_sim_adjacency_raw.rds"))
-
-# Calculate cosine distance between shared assays for each drug combination ----
-###############################################################################T
-
-rscore_sparse_mat <- rscores %>%
-  mutate(
-    data = map(
-      data,
-      ~.x %>%
-        filter(is.finite(rscore_tr))
-    ) %>%
-      map(create_sparse_mat)
-  )
-
-pfp_sim_raw <- rscore_sparse_mat %>%
-  mutate(
-    data = map(data, qlcMatrix::cosSparse)
-  )
-
-write_rds(
-  pfp_sim_raw,
-  file.path(dir_release, "pfp_sim_cosine_raw.rds"),
-  compress = "gz"
-)
-
-# pfp_table_raw <- read_rds(
-#   file.path(dir_release, "pfp_sim_cosine_raw.rds")
-# )
-
-pwalk(
-  pfp_table_raw,
-  function(fp_name, data, ...) {
-    write_rds(
-      data,
-      file.path(dir_release, paste0("pfp_sim_cosine_raw_", fp_name, ".rds")),
-      compress = "gz"
-    )
-  }
-)
-
-
-# Have to go through the pfp data for each fingerprint dataset separately
-# due to memory constraints
-# In file 05_calculating_pfp_similarity_processing.R
 
 # Upload to synapse ------------------------------------------------------------
 ###############################################################################T
