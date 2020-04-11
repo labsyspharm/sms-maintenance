@@ -5,6 +5,7 @@ library(tidyverse)
 library(data.table)
 library(here)
 library(furrr)
+library(future.apply)
 library(synapser)
 library(synExtra)
 
@@ -113,15 +114,13 @@ iterate_targets <- function(c.data) {
 # calculate toolscores ---------------------------------------------------------
 ###############################################################################T
 
-
-
 activities_lspci_id_geneid <- activities %>%
   unnest(data) %>%
-  rename(lspci_id, gene_id = entrez_gene_id, standard_value = value)
+  rename(gene_id = entrez_gene_id, standard_value = value)
 
 # lspci_id_list<-dlply(activities_lspci_id_geneid,.(lspci_id),c)
 
-plan(multisession(workers = 8))
+plan(multicore(workers = 10))
 toolscore.b <- activities_lspci_id_geneid %>%
   group_nest(fp_name, fp_type, lspci_id, keep = TRUE) %>%
   mutate(
@@ -129,7 +128,12 @@ toolscore.b <- activities_lspci_id_geneid %>%
       data,
       iterate_targets,
       .progress = TRUE
-    )
+    ),
+    # result = future_lapply(
+    #   data,
+    #   iterate_targets,
+    #   future.chunk.size = 100
+    # )
   )
 
 write_rds(
