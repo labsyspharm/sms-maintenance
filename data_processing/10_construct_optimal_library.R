@@ -1,6 +1,7 @@
 library(tidyverse)
 library(here)
 library(furrr)
+library(lspcheminf)
 library(synapser)
 library(synExtra)
 
@@ -31,26 +32,11 @@ kinases <- syn("syn12617467") %>%
 affinity <- syn("syn20830834") %>%
   read_rds()
 
+clinical_info <- syn("syn21064122") %>%
+  read_rds()
+
 # Prepare chemical similarity  files -------------------------------------------
 ###############################################################################T
-
-fps_headers <- list(
-morgan_normal = "#FPS1
-#num_bits=2048
-#type=RDKit-Morgan/1 radius=2 fpSize=2048 useFeatures=0 useChirality=0 useBondTypes=1
-#software=RDKit/2018.09.3 chemfp/1.5
-",
-morgan_chiral = "#FPS1
-#num_bits=2048
-#type=RDKit-Morgan/1 radius=2 fpSize=2048 useFeatures=0 useChirality=1 useBondTypes=1
-#software=RDKit/2018.09.3 chemfp/1.5
-",
-topological_normal = "#FPS1
-#num_bits=2048
-#type=RDKit-Fingerprint/2 minPath=1 maxPath=7 fpSize=2048 nBitsPerHash=2 useHs=1
-#software=RDKit/2018.09.3 chemfp/1.5
-"
-)
 
 fps_selective <- canonical_fps %>%
   left_join(rename(selectivity, selectivity_df = data)) %>%
@@ -63,39 +49,32 @@ fps_selective <- canonical_fps %>%
         lspci_id %in% filter(..3, selectivity_class %in% c("most_selective", "semi_selective"))$lspci_id
       ) %>%
         select(fingerprint, lspci_id)
-    ),
-    selectivity_fn = file.path(dir_release, paste0("fps_selective_", fp_name, ".fps"))
+    )
   )
 
-pwalk(
-  fps_selective,
-  function(data, selectivity_fn, fp_name, ...) {
-    write_file(
-      fps_headers[[fp_name]],
-      selectivity_fn
-    )
-    write_tsv(
-      data,
-      selectivity_fn,
-      append = TRUE
-    )
-  }
-)
 
-
-source(here("id_mapping", "chemoinformatics_funcs.R"))
-plan(multisession(workers = 2))
+plan(multicore(workers = 8))
 chemical_sim_selective <- fps_selective %>%
   mutate(
     data = future_map(
-      selectivity_fn,
-      scan_fingerprint_matches, threshold = 0.2
-    ) %>%
-      map(mutate_at, vars("match", "query"), as.integer) %>%
-      map(mutate_at, vars("score"), as.double) %>%
-      # Use only upper triangle of symmetric matrix
-      map(filter, query < match) %>%
-      map(select, lspci_id_1 = query, lspci_id_2 = match, tanimoto_similarity = score)
+      data,
+      ~chemical_similarity_threshold(
+        set_names(.x[["fingerprint"]], .x[["lspci_id"]]),
+        precalculated = TRUE,
+        threshold = 0.2
+      ) %>%
+        mutate_at(
+          vars(query, target),
+          as.integer
+        ) %>%
+        distinct(
+          lspci_id_1 = if_else(query > target, target, query),
+          lspci_id_2 = if_else(query > target, query, target),
+          tanimoto_similarity = score
+        ) %>%
+        arrange(lspci_id_1, lspci_id_2),
+      progress = TRUE
+    )
   )
 
 write_rds(
@@ -191,7 +170,7 @@ optimal_libraries <- chemical_sim_selective %>%
 
 write_rds(
   optimal_libraries %>%
-    select(fp_type, fp_name, data),
+    select(fp_name, fp_type, data),
   file.path(dir_release, "optimal_library.rds"),
   compress = "gz"
 )
@@ -207,7 +186,7 @@ clinical_compounds <- clinical_info %>%
       ~inner_join(
         distinct(.x, lspci_id, max_phase),
         filter(.y, Q1 <= 1000),
-        by = c("lspci_id" = "eq_class")
+        by = "lspci_id"
       )
     )
   )
@@ -216,13 +195,13 @@ clinical_compounds <- clinical_info %>%
 ###############################################################################T
 
 # Liganded genome 3 cmpds < 10 uM
-liganded_genome <- affinity %>%
-  mutate(
-    data = map(
-      data,
-
-    )
-  )
+# liganded_genome <- affinity %>%
+#   mutate(
+#     data = map(
+#       data,
+#
+#     )
+#   )
 
 # Subset optimal library to contain only kinase targets ------------------------
 ###############################################################################T
@@ -253,7 +232,9 @@ library_activity <- Activity(
     "syn12617467",
     "syn20836653",
     "syn21042105",
-    "syn21049601"
+    "syn21049601",
+    "syn20830834",
+    "syn21064122"
   ),
   executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/data_processing/10_construct_optimal_library.R"
 )

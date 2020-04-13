@@ -26,7 +26,7 @@ clinical_info <- compound_map %>%
   mutate(
     data = map(
       data,
-      ~left_join(clinical_info_raw, select(.x, id, lspci_id), by = c("chembl_id_compound" = "id")) %>%
+      ~inner_join(clinical_info_raw, select(.x, id, lspci_id), by = c("chembl_id_compound" = "id")) %>%
         distinct(
           lspci_id, chembl_id = chembl_id_compound, max_phase, first_approval, oral, parenteral, topical,
           black_box_warning, first_in_class, prodrug, indication_class,
