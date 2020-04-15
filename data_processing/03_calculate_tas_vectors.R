@@ -84,6 +84,11 @@ literature_annotations <- cmpd_eq_classes %>%
 # calculate TAS ----------------------------------------------------------------
 ###############################################################################T
 
+# https://stackoverflow.com/a/3443955/4603385
+sigfig <- function(vec, n = 3){
+  gsub("\\.$", "", formatC(signif(vec, digits = n), digits = n,format = "fg", flag = "#"))
+}
+
 complete_table_tas <- complete_dose_response_Q1 %>%
   mutate(
     data = map(
@@ -97,7 +102,7 @@ complete_table_tas <- complete_dose_response_Q1 %>%
             Q1 >= 10000 ~ 10L,
             TRUE ~ NA_integer_
           ),
-          measurement = paste0("Affinity ", Q1, " nM")
+          measurement = paste0("Affinity ", sigfig(Q1), " nM")
         )
     )
   )
@@ -165,7 +170,7 @@ hmsl_kinomescan_tas_agg <- hmsl_kinomescan_tas %>%
                 unique() %>%
                 paste(collapse = "|"),
               measurement = paste(
-                percent_control_Q1, "% control at ", cmpd_conc_nM, " nM",
+                sigfig(percent_control_Q1), "% control at ", cmpd_conc_nM, " nM",
                 sep = "", collapse = "; "
               )
             )
