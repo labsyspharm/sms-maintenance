@@ -38,7 +38,12 @@ compound_tables <- compounds %>%
         arrange(lspci_id) %>%
         left_join(
           .y %>%
-            select(lspci_id, max_phase),
+            select(lspci_id, max_phase) %>%
+            drop_na() %>%
+            group_by(lspci_id) %>%
+            arrange(desc(max_phase), .by_group = TRUE) %>%
+            slice(1) %>%
+            ungroup(),
           by = "lspci_id"
         ) %>%
         distinct(
