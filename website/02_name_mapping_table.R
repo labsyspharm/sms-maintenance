@@ -3,6 +3,7 @@ library(data.table)
 library(here)
 library(synapser)
 library(synExtra)
+library(fst)
 
 synLogin()
 syn <- synDownloader(here("tempdl"), followLink = TRUE)
@@ -18,7 +19,10 @@ syn_tables <- "syn20981852"
 canonical_table <- syn("syn20835543") %>%
   read_rds()
 
-# Name mapping table -----------------------------------------------------------
+target_table <- syn("syn20693721") %>%
+  read_csv()
+
+# Compound name mapping table --------------------------------------------------
 ###############################################################################T
 
 NAME_SOURCE_PREFERENCE <- c("pref_name", "alt_name", "chembl_id", "hms_id")
@@ -101,10 +105,48 @@ pwalk(
       synStore() %>%
       chuck("properties", "id")
     c(
-      # file.path(dir_release, paste0("lspci_id_name_map.csv.gz")),
-      file.path(dir_release, paste0("name_lspci_id_map.fst"))
-      # file.path(dir_release, paste0("lspci_id_name_map.fst"))
+      file.path(dir_release, paste0("lspci_id_name_map.csv.gz")),
+      file.path(dir_release, paste0("name_lspci_id_map.fst")),
+      file.path(dir_release, paste0("lspci_id_name_map.fst"))
     ) %>%
       synStoreMany(syn_parent, activity = activity)
   }
 )
+
+# Gene name mapping table ------------------------------------------------------
+###############################################################################T
+
+gene_id_symbol_mapping <- target_table %>%
+  drop_na() %>%
+  distinct(symbol = entrez_symbol, gene_id = entrez_gene_id)
+
+write_fst(
+  gene_id_symbol_mapping,
+  file.path(dir_release, "gene_id_symbol_map.fst")
+)
+
+symbol_gene_id_mapping <- gene_id_symbol_mapping %>%
+  group_by(symbol) %>%
+  summarize(gene_id = list(gene_id)) %>%
+  ungroup() %>%
+  {set_names(.[["gene_id"]], .[["symbol"]])}
+
+write_rds(
+  symbol_gene_id_mapping,
+  file.path(dir_release, "symbol_gene_id_map.rds"),
+  compress = "gz"
+)
+
+activity <- Activity(
+  name = "Wrangle gene symbol mapping table",
+  used = c(
+    "syn20693721"
+  ),
+  executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/website/02_name_mapping_table.R"
+)
+
+c(
+  file.path(dir_release, "gene_id_symbol_map.fst"),
+  file.path(dir_release, "symbol_gene_id_map.rds")
+) %>%
+  synStoreMany(parentId = "syn21449352", activity = activity)
