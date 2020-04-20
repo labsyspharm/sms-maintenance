@@ -29,7 +29,7 @@ fingerprint_tables <- fingerprints %>%
       ~.x %>%
         arrange(lspci_id) %>%
         filter(fp_name == "morgan_normal") %>%
-        select(lspci_id, fingerprint)
+        {set_names(.[["fingerprint"]], .[["lspci_id"]])}
     )
   )
 
@@ -44,7 +44,7 @@ activity <- Activity(
 pwalk(
   fingerprint_tables,
   function(data, fp_name, ...) {
-    fps <- MorganFPS$new(data[["fingerprint"]])
+    fps <- MorganFPS$new(data)
     fps$save_file(
       file.path(dir_release, paste0("shiny_fingerprints_", fp_name, ".bin"))
     )
