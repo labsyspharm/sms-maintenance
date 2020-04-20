@@ -52,7 +52,8 @@ combine_tables <- function(selectivity, biochemical, clinical, ...) {
         poly_selective = "Poly-selective",
         unknown_selective = "Unknown",
         other_selective = "Other"
-      )
+      ),
+      selectivity
     ) %>%
     left_join(
       biochemical %>%
