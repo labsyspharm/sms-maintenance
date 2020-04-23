@@ -19,10 +19,7 @@ syn_tables <- "syn20981852"
 selectivity_classes <- syn("syn20836653") %>%
   read_rds()
 
-biochemical <- syn("syn20830834") %>%
-  read_rds()
-
-clinical <- syn("syn21064122") %>%
+dose_response <- syn("syn20830834") %>%
   read_rds()
 
 # chemical_probes <- syn("syn21627808") %>%
@@ -31,20 +28,12 @@ clinical <- syn("syn21064122") %>%
 # Selectivity table ------------------------------------------------------------
 ###############################################################################T
 
-combine_tables <- function(selectivity, biochemical, clinical, ...) {
+combine_tables <- function(selectivity, biochemical, ...) {
   df <- selectivity %>%
     distinct(
       lspci_id,
       gene_id,
-      symbol = gene_symbol,
-      chembl_id,
-      hms_id,
-      toolscore = tool_score,
-      ontarget_IC50_Q1,
-      ontarget_IC50_N,
-      offtarget_IC50_Q1,
-      offtarget_IC50_N,
-      IC50_diff,
+      selectivity,
       selectivity_class = recode(
         selectivity_class,
         most_selective = "Most selective",
@@ -53,22 +42,20 @@ combine_tables <- function(selectivity, biochemical, clinical, ...) {
         unknown_selective = "Unknown",
         other_selective = "Other"
       ),
-      selectivity
+      toolscore = tool_score,
+      affinity_Q1 = ontarget_IC50_Q1,
+      affinity_N = ontarget_IC50_N,
+      offtarget_affinity_Q1 = offtarget_IC50_Q1,
+      offtarget_affinity_N = offtarget_IC50_N,
+      affinity_Q1_diff = IC50_diff,
+      investigation_bias,
+      wilcox_pval,
+      strength
     ) %>%
     left_join(
       biochemical %>%
-        distinct(lspci_id, gene_id = entrez_gene_id, Kd_Q1 = Q1, n_measurement_kd = n_measurement),
+        distinct(lspci_id, gene_id = entrez_gene_id, references),
       by = c("lspci_id", "gene_id")
-    ) %>%
-    left_join(
-      clinical %>%
-        group_by(lspci_id) %>%
-        summarize(
-          max_phase = max(max_phase, na.rm = TRUE) %>% {if_else(. > 4, NA_real_, .)},
-          first_approval = min(first_approval, na.rm = TRUE) %>% {if_else(. < 0, NA_real_, .)}
-        ) %>%
-        ungroup(),
-      by = "lspci_id"
     ) %>%
     as.data.table()
   setkey(df, lspci_id, gene_id)
@@ -78,13 +65,8 @@ combine_tables <- function(selectivity, biochemical, clinical, ...) {
 selectivity_table <- selectivity_classes %>%
   rename(selectivity = data) %>%
   inner_join(
-    biochemical %>%
+    dose_response %>%
       rename(biochemical = data),
-    by = c("fp_type", "fp_name")
-  ) %>%
-  inner_join(
-    clinical %>%
-      rename(clinical = data),
     by = c("fp_type", "fp_name")
   ) %>%
   transmute(
@@ -100,11 +82,11 @@ activity <- Activity(
   name = "Wrangle selectivity table",
   used = c(
     "syn20836653",
-    "syn20830834",
-    "syn21064122"
+    "syn20830834"
   ),
   executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/website/03_shiny_selectivity.R"
 )
+
 pwalk(
   selectivity_table,
   function(fp_name, data, ...) {
@@ -126,6 +108,9 @@ pwalk(
 )
 
 
+# Binding data -----------------------------------------------------------------
+###############################################################################T
+
 activity <- Activity(
   name = "Wrangle biochemical table",
   used = c(
@@ -135,10 +120,10 @@ activity <- Activity(
 )
 
 pwalk(
-  biochemical,
+  dose_response,
   function(fp_name, data, ...) {
     data <- data %>%
-      rename(gene_id = entrez_gene_id, Kd_Q1 = Q1, n_measurement_kd = n_measurement) %>%
+      distinct(lspci_id, gene_id = entrez_gene_id, affinity_Q1 = Q1, affinity_N = n_measurement, references) %>%
       as.data.table()
     setkey(data, lspci_id, gene_id)
     write_fst(
