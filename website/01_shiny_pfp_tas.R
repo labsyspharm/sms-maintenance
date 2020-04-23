@@ -87,7 +87,7 @@ tas_selected <- tas %>%
         d %>%
           mutate_at(vars(lspci_id, entrez_gene_id, tas), as.integer) %>%
           select(
-            lspci_id, gene_id = entrez_gene_id, tas, source, measurement, references
+            lspci_id, gene_id = entrez_gene_id, tas, source, measurement, unit, references
           ) %>%
           as.data.table() %>%
           {

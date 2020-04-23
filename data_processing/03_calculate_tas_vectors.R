@@ -56,7 +56,6 @@ complete_single_dose_Q1 %>%
 #   1     1 196194
 
 
-
 literature_annotations <- cmpd_eq_classes %>%
   mutate(
     data = map(
@@ -70,7 +69,7 @@ literature_annotations <- cmpd_eq_classes %>%
         select(lspci_id = eq_class, entrez_gene_id = gene_id) %>%
         mutate(
           tas = 2L,
-          measurement = "Manual literature curation",
+          evidence = "manual_curation",
           references = "synapse:syn20694521"
         ) %>%
         # There are some duplicates in the literature annotation file
@@ -86,7 +85,7 @@ literature_annotations <- cmpd_eq_classes %>%
 
 # https://stackoverflow.com/a/3443955/4603385
 sigfig <- function(vec, n = 3){
-  gsub("\\.$", "", formatC(signif(vec, digits = n), digits = n,format = "fg", flag = "#"))
+  as.numeric(gsub("\\.$", "", formatC(signif(vec, digits = n), digits = n,format = "fg", flag = "#")))
 }
 
 complete_table_tas <- complete_dose_response_Q1 %>%
@@ -102,7 +101,8 @@ complete_table_tas <- complete_dose_response_Q1 %>%
             Q1 >= 10000 ~ 10L,
             TRUE ~ NA_integer_
           ),
-          measurement = paste0("Affinity ", sigfig(Q1), " nM")
+          unit = "nM",
+          measurement = as.numeric(sigfig(Q1))
         )
     )
   )
@@ -169,10 +169,8 @@ hmsl_kinomescan_tas_agg <- hmsl_kinomescan_tas %>%
                 unlist() %>%
                 unique() %>%
                 paste(collapse = "|"),
-              measurement = paste(
-                sigfig(percent_control_Q1), "% control at ", cmpd_conc_nM, " nM",
-                sep = "", collapse = "; "
-              )
+              unit = paste0("% at ", cmpd_conc_nM, " nM"),
+              measurement = as.numeric(sigfig(percent_control_Q1))
             )
           ],
           by = .(lspci_id, entrez_gene_id)
@@ -182,28 +180,26 @@ hmsl_kinomescan_tas_agg <- hmsl_kinomescan_tas %>%
   )
 
 combined_q1 <- complete_table_tas %>%
-  rename(dose_response = data) %>%
+  rename(dose_response_assay = data) %>%
   full_join(
     hmsl_kinomescan_tas_agg %>%
-      rename(single_dose = data)
+      rename(single_dose_assay = data)
   ) %>%
   full_join(
     literature_annotations %>%
-      rename(literature = data)
+      rename(manual_curation = data)
   ) %>%
   mutate(
     data = pmap(
-      list(dose_response, single_dose, literature),
+      list(
+        dose_response_assay = dose_response_assay,
+        single_dose_assay = single_dose_assay,
+        manual_curation = manual_curation
+      ),
       function(...) {
-        tibble(
-          source = c("dose_response", "single_dose", "literature") %>%
-            {factor(x = ., levels = .)},
-          data = map(
-            list(...),
-            select, lspci_id, entrez_gene_id, tas, measurement, references
-          )
-        ) %>%
-          unnest(data)
+        args <- list(...)
+        bind_rows(args, .id = "source") %>%
+          select(lspci_id, entrez_gene_id, source, tas, measurement, unit, references)
       }
     )
   ) %>%
@@ -218,8 +214,8 @@ combined_q1_agg <- combined_q1 %>%
       data,
       ~.x %>%
         arrange(
-          fct_collapse(source, single_dose_literature = c("single_dose", "literature")) %>%
-            fct_relevel("dose_response"),
+          fct_collapse(source, single_dose_literature = c("single_dose_assay", "manual_curation")) %>%
+            fct_relevel("dose_response_assay"),
           tas
         ) %>%
         group_by(

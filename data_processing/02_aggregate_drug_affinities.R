@@ -245,7 +245,8 @@ hmsl_kinomescan_mapped <- all_cmpds_eq_classes %>%
         # I checked, no gene_symbol maps to multiple uniprot, so this is safe
         mutate(
           uniprot_id = as.character(uniprot_ids),
-          reference_type = "synapse"
+          # Either synapse ID or HMSL ID
+          reference_type = if_else(str_starts(source_assay_id, fixed("syn")), "synapse", "hms_lincs")
         ) %>%
         select(-uniprot_ids) %>%
         left_join(
