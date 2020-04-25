@@ -135,9 +135,9 @@ chembl_map_with_entrez %>%
 # # A tibble: 3 x 2
 # organism              n
 # <chr>             <int>
-#   1 Homo sapiens         15
-# 2 Mus musculus        149
-# 3 Rattus norvegicus   620
+#   1 Homo sapiens         14
+# 2 Mus musculus        187
+# 3 Rattus norvegicus   619
 
 # Only 15 human uniprot IDs left without a matching Entrez ID, good enough...
 
@@ -182,7 +182,7 @@ gene_info <- vroom(
     "map_location", "entrez_description", "entrez_type_of_gene", "symbol", "entrez_name", "nomenclature_status",
     "other_designations", "modification_date", "feature_type"
   ),
-  col_types = "iic_c___cc_c____",
+  col_types = "iic_c___cccc____",
   skip = 1
 )
 
@@ -195,7 +195,7 @@ map_chemblID_geneID <- chembl_map_with_entrez %>%
   ) %>%
   distinct()
 
-write_csv(map_chemblID_geneID, file.path(dir_release, "target_map.csv.gz"))
+write_csv(map_chemblID_geneID, file.path(dir_release, "target_dictionary.csv.gz"))
 
 # Store to synapse -------------------------------------------------------------
 ###############################################################################T
@@ -205,11 +205,13 @@ target_wrangling_activity <- Activity(
   executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/id_mapping/06_target_id_mapping.R"
 )
 
+syn_id_mapping <- synExtra::synPluck(syn_release, "id_mapping")
+
 list(
-  file.path(dir_release, "target_map.csv.gz")
+  file.path(dir_release, "target_dictionary.csv.gz")
 ) %>%
   map(
     . %>%
-      File(parent = syn_release) %>%
+      File(parent = syn_id_mapping) %>%
       synStore(activity = target_wrangling_activity)
   )

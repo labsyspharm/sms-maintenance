@@ -23,7 +23,7 @@ target_dict <- syn("syn20693721") %>%
 ###############################################################################T
 
 target_table <- target_dict %>%
-  distinct(gene_id = entrez_gene_id, symbol = entrez_symbol, tax_id) %>%
+  distinct(tax_id, gene_id = entrez_gene_id, symbol) %>%
   drop_na(gene_id) %>%
   as.data.table()
 
@@ -34,7 +34,7 @@ activity <- Activity(
   used = c(
     "syn20693721"
   ),
-  executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/website/05_shiny_target_table.R"
+  executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/website/06_shiny_target_table.R"
 )
 
 walk(
