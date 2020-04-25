@@ -68,7 +68,7 @@ write_csv(
 ###############################################################################T
 
 
-probes_canonicalized <- probes_table %>%
+probes_canonicalized <- probes_raw %>%
   {set_names(.$smiles, .$`Probe Name`)} %>%
   convert_compound_identifier(identifier = "smiles", target_identifier = "inchi") %>%
   {set_names(.$compounds, .$names)} %>%
@@ -86,7 +86,7 @@ find_matches <- function(query, targets) {
     bind_rows()
 }
 
-plan(multisession(workers = 4))
+plan(multicore(workers = 4))
 probe_matches <- compound_table %>%
   mutate(
     data = map(
