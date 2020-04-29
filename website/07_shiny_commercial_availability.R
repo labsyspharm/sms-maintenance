@@ -28,7 +28,7 @@ commercial_tables <- commercial_info %>%
       data,
       function(df) {
         out <- df %>%
-          distinct(lspci_id, vendor, vendor_id, vendor_url) %>%
+          distinct(lspci_id, vendor, vendor_id) %>%
           as.data.table()
         setkey(out, lspci_id)
         out

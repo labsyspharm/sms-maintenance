@@ -7,6 +7,7 @@ library(future)
 library(rvest)
 library(polite)
 library(here)
+library(data.table)
 
 synLogin()
 syn <- synDownloader(here("tempdl"))
@@ -21,50 +22,102 @@ syn_release <- synFindEntityId(release, "syn18457321")
 chembl_zinc_mapping <- syn("syn21572663") %>%
   read_csv()
 
+zinc_catalogs <- syn("syn21994981") %>%
+  read_csv()
+
 dir_vendor <- file.path(dir_release, "vendor")
 dir.create(dir_vendor, showWarnings = FALSE)
 
 # Fetch vendor info from ZINC --------------------------------------------------
 ###############################################################################T
 
-vendor_libraries <- tribble(
-  ~id, ~url, ~vendor_url,
-  "targetmol", "http://files.docking.org/catalogs/40/", "https://www.targetmol.com/search?keyword=",
-  "mce", "http://files.docking.org/catalogs/50/", "https://www.medchemexpress.com/search.html?q=",
-  "selleck", "http://files.docking.org/catalogs/50/", "https://www.selleckchem.com/search.html?searchDTO.searchParam=",
-  "tocris", "http://files.docking.org/catalogs/50/", "https://www.tocris.com/products/",
-  "enamine", "http://files.docking.org/catalogs/50/", "https://www.enaminestore.com/catalog/",
-  "enaminebb", "http://files.docking.org/catalogs/50/", "https://www.enaminestore.com/catalog/"
+# Get catalog URLS
+
+catalog_urls <- tribble(
+  ~class_id, ~class,
+  "50", "in_stock",
+  "40", "in_stock",
+  "30", "in_stock",
+  "20", "on_demand",
+  "10", "boutique",
+  # "7", "one_step",
+  "3", "unclear"
 ) %>%
   mutate(
-    codemap_url = paste0(url, id, "/", id, ".codemap.txt.gz"),
-    info_url = paste0(url, id, "/", id, ".info.txt.gz")
-  )
+    vendor = map(
+      class_id,
+      ~xml2::read_html(paste0("http://files.docking.org/catalogs/", .x)) %>%
+        rvest::html_node("table") %>%
+        rvest::html_table(fill = TRUE) %>%
+        magrittr::extract(-1) %>%
+        mutate(
+          Name = str_trim(Name) %>%
+            str_replace("/$", "")
+        ) %>%
+        filter(Size == "-", Name != "", `Last modified` != "") %>%
+        pull(Name)
+        # rvest::html_nodes("td[valign='top'] + td a") %>%
+        # magrittr::extract(-1) %>%
+        # rvest::html_text(trim = TRUE) %>%
+        # str_replace("/$", "")
+    )
+  ) %>%
+  unchop(vendor)
+
+# Download vendor libraries
 
 pwalk(
-  vendor_libraries,
-  function(codemap_url, info_url, id, ...) {
-    download.file(codemap_url, file.path(dir_vendor, paste0("codemap_", id, ".txt.gz")))
-    download.file(info_url, file.path(dir_vendor, paste0("info_", id, ".txt.gz")))
+  catalog_urls,
+  function(vendor, class_id, ...) {
+    message(vendor)
+    path <- file.path(dir_vendor, paste0("info_", vendor, ".txt"))
+    remote_path <- paste0("http://files.docking.org/catalogs/", class_id ,"/", vendor, "/", vendor, ".info.txt")
+    for (ext in c(".gz", "")) {
+      p <- paste0(path, ext)
+      if (file.exists(p) && file.size(p) > 5)
+        break
+      rp <- paste0(remote_path, ext)
+      res <- try(
+        download.file(rp, p)
+      )
+      if (class(res) != "try-error")
+        break
+    }
   }
 )
 
-vendor_tables <- vendor_libraries %>%
-  transmute(
-    id,
-    codemap = map(id, ~read_delim(file.path(dir_vendor, paste0("codemap_", .x, ".txt.gz")), delim = " ", col_names = c("zinc_id", "vendor_id"), col_types = "cc")),
-    info = map2(
-      id, vendor_url,
-      ~read_tsv(
-        file.path(dir_vendor, paste0("info_", .x, ".txt.gz")),
-        col_names = c("vendor_id", "zinc_id", "inchi_key", "tranche", "notes"),
-        col_types = "ccccc"
-      ) %>%
-        mutate(
-          vendor_url = paste0(.y, vendor_id)
+# Manually downloading http://files.docking.org/catalogs/10/enaminebb-v/enaminebb-v.0.info.txt.gz
+# it doesn't correspond to the pattern
+if (!file.exists(file.path(dir_vendor, "info_enaminebb-v.txt.gz")))
+  download.file("http://files.docking.org/catalogs/10/enaminebb-v/enaminebb-v.0.info.txt.gz", file.path(dir_vendor, "info_enaminebb-v.txt.gz"))
+
+# Remove "cdive" "cdivp", doesn't contain any
+
+vendor_libraries <- catalog_urls %>%
+  filter(!vendor %in% c("cdive", "cdivp", "msnp")) %>%
+  select(vendor, class) %>%
+  mutate(
+    data = map(
+      vendor,
+      function(vendor) {
+        message(vendor)
+        f <- Sys.glob(
+          file.path(dir_vendor, paste0("info_", vendor, ".txt*"))
         )
+        message(f)
+        fread(
+          f,
+          header = FALSE,
+          colClasses = rep_len("character", 5),
+          col.names = c("vendor_id", "zinc_id", "inchi_key", "tranche", "notes")
+        )
+      }
     )
   )
+
+vendor_tables <- vendor_libraries %>%
+  unnest(data) %>%
+  setDT()
 
 # Mapping from Zinc IDs to Chembl provided by Zinc directly
 download.file("http://files.docking.org/catalogs/1/chembl23/chembl23.codemap.txt.gz", file.path(dir_vendor, "codemap_chembl23.txt.gz"))
@@ -73,19 +126,17 @@ chembl_codemap <- read_delim(file.path(dir_vendor, "codemap_chembl23.txt.gz"), d
 zinc_mapping <- chembl_zinc_mapping %>%
   select(-uci) %>%
   bind_rows(chembl_codemap) %>%
-  distinct()
+  distinct() %>%
+  setDT()
 
-vendor_tables_chembl <- vendor_tables %>%
-  dplyr::select(vendor = id, info) %>%
-  unnest(info) %>%
-  dplyr::select(-tranche) %>%
-  left_join(
-    zinc_mapping, by = "zinc_id"
-  )
+vendor_tables_chembl <- vendor_tables[
+  zinc_mapping, on = "zinc_id", nomatch = NULL
+]
 
-write_csv(
+fwrite(
   vendor_tables_chembl,
-  file.path(dir_vendor, "zinc_commercial_compounds.csv.gz")
+  file.path(dir_vendor, "zinc_commercial_compounds.csv.gz"),
+  na = "NA"
 )
 
 # Get compound names from vendors ----------------------------------------------
@@ -139,8 +190,20 @@ try_again <- function(fun, n = 3, otherwise = NA_character_, ...) {
   res
 }
 
+vendor_url_templates <- tribble(
+  ~vendor, ~url_template,
+  "targetmol", "https://www.targetmol.com/search?keyword=",
+  "mce", "https://www.medchemexpress.com/search.html?q=",
+  "selleck", "https://www.selleckchem.com/search.html?searchDTO.searchParam=",
+  "tocris", "https://www.tocris.com/products/",
+  "enamine", "https://www.enaminestore.com/catalog/",
+  "enaminebb", "https://www.enaminestore.com/catalog/"
+)
+
 vendor_info_unique <- vendor_tables_chembl %>%
+  inner_join(vendor_url_templates, by = "vendor") %>%
   filter(vendor %in% names(cmpd_name_funcs), !is.na(chembl_id)) %>%
+  mutate(vendor_url = paste0(url_template, vendor_id)) %>%
   distinct(vendor, vendor_id, vendor_url)
 
 max_tries <- 3
@@ -237,8 +300,9 @@ wrangle_activity <- Activity(
   name = "Wrangle commercial availability of compounds from ZINC",
   used = c(
     "syn21572663",
+    "syn21994981",
     "http://files.docking.org/catalogs/1/chembl23/chembl23.codemap.txt.gz",
-    vendor_libraries$info_url
+    "http://files.docking.org/catalogs/"
   ),
   executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/id_mapping/01_zinc_ids.R"
 )
