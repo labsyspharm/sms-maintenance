@@ -23,8 +23,10 @@ target_dict <- syn("syn20693721") %>%
 ###############################################################################T
 
 target_table <- target_dict %>%
+  drop_na(entrez_gene_id) %>%
+  # Replace nonsense symbol "-" with entrez id
+  mutate(symbol = recode(symbol, `-` = paste0("uniprot_", uniprot_id))) %>%
   distinct(tax_id, gene_id = entrez_gene_id, symbol) %>%
-  drop_na(gene_id) %>%
   as.data.table()
 
 setkey(target_table, gene_id)
