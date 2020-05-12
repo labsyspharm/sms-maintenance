@@ -156,7 +156,21 @@ all_names_lspci_id <- eq_classes %>%
           by = "id"
         ) %>%
         distinct(lspci_id, source, name) %>%
-        arrange(lspci_id, source, name)
+        arrange(lspci_id, source, name) %>%
+        as.data.table() %>%
+        {
+          .[
+            ,
+            source_collapsed := fct_collapse(source, !!!NAME_SOURCE_RANKING) %>%
+              fct_relevel("primary")
+          ][
+            # Prefer name with fewer spaces (no salts) and
+            # shorter name if multiple sources with same priority are available
+            order(lspci_id, source_collapsed, str_count(name, fixed(" ")), str_length(name))
+          ]
+        } %>%
+        as_tibble() %>%
+        distinct()
     )
   )
 
@@ -166,34 +180,9 @@ write_rds(
   compress = "gz"
 )
 
-all_names_ranked <- all_names_lspci_id %>%
-  mutate(
-    data = map(
-      data,
-      ~as.data.table(.x)[
-          ,
-          source := fct_collapse(source, !!!NAME_SOURCE_RANKING) %>%
-            fct_relevel("primary")
-        ][
-          # Prefer name with fewer spaces (no salts) and
-          # shorter name if multiple sources with same priority are available
-          order(lspci_id, source, str_count(name, fixed(" ")), str_length(name))
-        ] %>%
-        as_tibble() %>%
-        distinct()
-    )
-  )
-
-write_rds(
-  all_names_ranked,
-  file.path(dir_release, "all_names_ranked.rds"),
-  compress = "gz"
-)
-
 synStoreMany(
   c(
-    file.path(dir_release, "all_names.rds"),
-    file.path(dir_release, "all_names_ranked.rds")
+    file.path(dir_release, "all_names.rds")
   ),
   parent = Folder("id_mapping", parent = syn_release) %>%
     synStore() %>%
@@ -209,7 +198,6 @@ synStoreMany(
     executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/id_mapping/04_compound_id_mapping.R"
   )
 )
-
 
 find_canonical_names <- function(name_df) {
   as.data.table(name_df) %>%
@@ -227,7 +215,7 @@ find_canonical_names <- function(name_df) {
 }
 
 
-canonical_names <- all_names_ranked %>%
+canonical_names <- all_names_lspci_id %>%
   mutate(
     data = map(data, find_canonical_names)
   )
