@@ -110,23 +110,27 @@ write_rds(
 # Finding canonical names ------------------------------------------------------
 ###############################################################################T
 
+NAME_SOURCE_LEVELS <- c("vendor", "hmsl_pref", "chembl_pref", "hmsl_alt", "chembl_alt")
+NAME_SOURCE_RANKING <- list(
+  "primary" = c("vendor", "hmsl_pref", "chembl_pref"),
+  "secondary" = c("hmsl_alt", "chembl_alt")
+)
+
 all_names <- list(
-  "chembl" = chembl_cmpds %>%
-    transmute(
+  "chembl_pref" = chembl_cmpds %>%
+    select(id = chembl_id, name = pref_name),
+  "chembl_alt" = chembl_cmpds %>%
+    select(
       id = chembl_id,
-      name = map2(
-        pref_name, synonyms,
-        ~c(if (!is.na(.x)) .x, if (!is.null(.y)) .y)
-      )
+      name = synonyms
     ) %>%
     unchop(name),
-  "hmsl" = hmsl_cmpds %>%
-    transmute(
+  "hmsl_pref" = hmsl_cmpds %>%
+    select(id = hms_id, name),
+  "hmsl_alt" = hmsl_cmpds %>%
+    select(
       id = hms_id,
-      name = map2(
-        name, alternate_names,
-        ~c(if (!is.na(.x)) .x, if (!is.null(.y)) .y)
-      )
+      name = alternate_names
     ) %>%
     unchop(name),
   "vendor" = vendor_names %>%
@@ -135,41 +139,104 @@ all_names <- list(
   bind_rows(.id = "source") %>%
   # Arrange sources by most to least trust-worthy
   mutate(
-    source = factor(source, levels = c("vendor", "chembl", "hmsl"))
+    source = factor(source, levels = NAME_SOURCE_LEVELS)
   ) %>%
   arrange(id, source) %>%
-  distinct()
+  distinct() %>%
+  drop_na()
 
-find_canonical_names <- function(eq_class_df, name_df) {
-  as.data.table(eq_class_df) %>%
-    .[, list(eq_class, id)] %>%
-    .[
-      name_df,
-      on = "id",
-      nomatch = NULL
-    ] %>%
-    .[
-      order(eq_class, source)
-    ] %>%
-    .[
-      ,
-      .(
-        pref_name = name[[1]],
-        alt_names = list(name[-1])
-      ),
-      by = eq_class
-    ]
-}
-
-canonical_names <- eq_classes %>%
+all_names_lspci_id <- eq_classes %>%
   mutate(
     data = map(
       data,
-      find_canonical_names,
-      name_df = as.data.table(all_names)
-    ) %>%
-      map(as_tibble)
+      ~.x %>%
+        select(lspci_id = eq_class, id) %>%
+        inner_join(
+          all_names,
+          by = "id"
+        ) %>%
+        distinct(lspci_id, source, name) %>%
+        arrange(lspci_id, source, name)
+    )
   )
+
+write_rds(
+  all_names_lspci_id,
+  file.path(dir_release, "all_names.rds"),
+  compress = "gz"
+)
+
+all_names_ranked <- all_names_lspci_id %>%
+  mutate(
+    data = map(
+      data,
+      ~as.data.table(.x)[
+          ,
+          source := fct_collapse(source, !!!NAME_SOURCE_RANKING) %>%
+            fct_relevel("primary")
+        ][
+          # Prefer name with fewer spaces (no salts) and
+          # shorter name if multiple sources with same priority are available
+          order(lspci_id, source, str_count(name, fixed(" ")), str_length(name))
+        ] %>%
+        as_tibble() %>%
+        distinct()
+    )
+  )
+
+write_rds(
+  all_names_ranked,
+  file.path(dir_release, "all_names_ranked.rds"),
+  compress = "gz"
+)
+
+synStoreMany(
+  c(
+    file.path(dir_release, "all_names.rds"),
+    file.path(dir_release, "all_names_ranked.rds")
+  ),
+  parent = Folder("id_mapping", parent = syn_release) %>%
+    synStore() %>%
+    chuck("properties", "id"),
+  activity = Activity(
+    name = "Map and wrangle compound IDs",
+    used = c(
+      "syn20692443",
+      "syn20692440",
+      "syn20830516",
+      "syn21901782"
+    ),
+    executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/id_mapping/04_compound_id_mapping.R"
+  )
+)
+
+
+find_canonical_names <- function(name_df) {
+  as.data.table(name_df) %>%
+    {
+      .[
+        ,
+        .(
+          pref_name = name[[1]],
+          alt_names = list(unique(name[-1]))
+        ),
+        by = lspci_id
+      ]
+    } %>%
+    as_tibble()
+}
+
+
+canonical_names <- all_names_ranked %>%
+  mutate(
+    data = map(data, find_canonical_names)
+  )
+
+write_rds(
+  canonical_names,
+  file.path(dir_release, "canonical_name.rds"),
+  compress = "gz"
+)
 
 # Finding canonical Inchis -----------------------------------------------------
 ###############################################################################T
@@ -191,22 +258,23 @@ all_inchis <- list(
 
 find_canonical_inchi <- function(eq_class_df, raw_inchis) {
   as.data.table(eq_class_df) %>%
-    .[, list(eq_class, id)] %>%
-    .[
-      raw_inchis,
-      on = "id",
-      nomatch = NULL
-    ] %>%
-    .[
-      order(eq_class, source)
-    ] %>%
-    .[
-      ,
-      .(
-        inchi = inchi[[1]]
-      ),
-      by = "eq_class"
-    ]
+    {
+      .[
+        , list(eq_class, id)
+      ][
+        raw_inchis,
+        on = "id",
+        nomatch = NULL
+      ][
+        order(eq_class, source)
+      ][
+        ,
+        .(
+          inchi = inchi[[1]]
+        ),
+        by = "eq_class"
+      ]
+    }
 }
 
 canonical_inchis <- eq_classes %>%
@@ -223,7 +291,7 @@ canonical_inchis <- eq_classes %>%
 # Find canonical SMILES representation -----------------------------------------
 ###############################################################################T
 
-plan(multisession(workers = 6))
+plan(multicore(workers = 4))
 canonical_smiles <- canonical_inchis %>%
   mutate(
     data = map(
@@ -243,6 +311,12 @@ canonical_smiles <- canonical_inchis %>%
     )
   )
 
+write_rds(
+  canonical_smiles,
+  file.path(dir_release, "canonical_smiles.rds"),
+  compress = "gz"
+)
+
 # Create table of canonical compounds ------------------------------------------
 ###############################################################################T
 
@@ -253,7 +327,7 @@ create_canonical_table <- function(members, names, inchis, smiles) {
     spread(source, id) %>%
     left_join(
       names,
-      by = "eq_class"
+      by = c("eq_class" = "lspci_id")
     ) %>%
     left_join(
       inchis,
