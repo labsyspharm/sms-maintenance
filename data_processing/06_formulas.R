@@ -21,34 +21,46 @@ syn_release <- synFindEntityId(release, "syn18457321")
 canonical_compounds <- syn("syn20835543") %>%
   read_rds()
 
-plan(multisession(workers = 6))
-organic <- canonical_compounds %>%
+options(future.globals.maxSize = 1024 * 1024 * 1000)
+plan(multisession(workers = 3))
+chemical_formulas <- canonical_compounds %>%
   mutate(
-    data = map(
+    data = future_map(
       data,
       function(df) {
         df %>%
           drop_na(inchi) %>%
-          chunk_df(12) %>%
-          map(~set_names(.x[["inchi"]], .x[["lspci_id"]])) %>%
-          future_map(is_organic, .progress = TRUE)
-      }
+          transmute(
+            lspci_id,
+            formula = inchi %>%
+              str_split_fixed(fixed("/"), 3) %>%
+              {.[, 2]},
+            formula_vector = formula %>%
+              str_match_all("([A-Z][a-z]?)([0-9]*)") %>%
+              map(~set_names(replace_na(as.integer(.x[, 3]), 1L), .x[, 2]))
+          )
+      },
+      .progress = TRUE
     )
   )
 
-organic_df <- organic %>%
+chemical_formulas_df <- chemical_formulas %>%
   mutate(
     data = map(
       data,
-      bind_rows
-    ) %>%
-      map(transmute, lspci_id = as.integer(compound), is_organic) %>%
-      map(arrange, lspci_id)
+      ~.x %>%
+        mutate(
+          is_organic = map_lgl(
+            formula_vector,
+            ~"C" %in% names(.x)
+          )
+        )
+    )
   )
 
 write_rds(
-  organic_df,
-  file.path(dir_release, "organic_compounds.rds"),
+  chemical_formulas_df,
+  file.path(dir_release, "chemical_formulas.rds"),
   compress = "gz"
 )
 
@@ -56,11 +68,11 @@ write_rds(
 ###############################################################################T
 
 activity <- Activity(
-  name = "Find organic compounds",
+  name = "Compute compound formulas and find organic compounds",
   used = c(
     "syn20835543"
   ),
-  executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/data_processing/06_organic_compounds.R"
+  executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/data_processing/06_formulas.R"
 )
 
 syn_folder <- Folder("properties", syn_release) %>%
@@ -68,7 +80,7 @@ syn_folder <- Folder("properties", syn_release) %>%
   chuck("properties", "id")
 
 c(
-  file.path(dir_release, "organic_compounds.rds")
+  file.path(dir_release, "chemical_formulas.rds")
 ) %>%
   synStoreMany(parent = syn_folder, activity = activity)
 
