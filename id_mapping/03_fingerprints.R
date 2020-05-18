@@ -1,8 +1,5 @@
 library(tidyverse)
-library(httr)
 library(furrr)
-library(bit64)
-library(jsonlite)
 library(data.table)
 library(here)
 library(synapser)
@@ -21,33 +18,80 @@ syn_release <- synFindEntityId(release, "syn18457321")
 ###############################################################################T
 
 compound_sources <- tribble(
-  ~source_name, ~synapse_id,
-  "chembl", "syn20692439",
-  "hmsl", "syn20692442"
+  ~source, ~canonical, ~raw,
+  "chembl", "syn20692439", "syn20692440",
+  "hmsl", "syn20692442", "syn20692443"
 )
 
-compounds_canonical <- compound_sources %>%
-  mutate(
-    canonical = map(
-      synapse_id,
-      . %>%
-        syn() %>%
-        read_csv(col_types = "ccc")
-    ) %>%
-      map(
-        rename_all,
-        str_replace,
-        "chembl_id|hms_id", "id"
-      )
+compounds <- compound_sources %>%
+  mutate_at(
+    vars(-source),
+    map,
+    function(s) {
+      f <- syn(s)
+      {
+        if (str_ends(f, "gz"))
+          read_csv(f, col_types = "ccc")
+        else
+          read_rds(f)
+      } %>%
+        rename_all(
+          str_replace,
+          fixed(if ("hms_id" %in% names(.)) "hms_id" else "chembl_id"),
+          "id"
+        ) %>%
+        rename_all(
+          str_replace,
+          fixed("standard_inchi"),
+          "inchi"
+        )
+    }
+  )
+
+compounds_all <- compounds %>%
+  transmute(
+    source,
+    data = map2(
+      canonical, raw,
+      ~.y %>%
+        select(id, raw_inchi = inchi) %>%
+        left_join(
+          select(.x, id, canonical_inchi = inchi),
+          by = "id"
+        )
+    )
   ) %>%
-  select(-synapse_id) %>%
-  unnest(canonical)
+  unnest(data) %>%
+  # Compute chemical formula
+  drop_na(raw_inchi) %>%
+  mutate(
+    formula = raw_inchi %>%
+      str_split_fixed(fixed("/"), 3) %>%
+      {.[, 2]},
+    formula_vector = formula %>%
+      str_match_all("([A-Z][a-z]?)([0-9]*)") %>%
+      map(~set_names(replace_na(as.integer(.x[, 3]), 1L), .x[, 2]))
+  )
 
-write_csv(
-  compounds_canonical,
-  file.path(dir_release, "all_compounds_canonical.csv.gz")
+compounds_selected <- compounds_all %>%
+  mutate(
+    inchi = case_when(
+      is.na(canonical_inchi) ~ raw_inchi,
+      # Only use canonicalized InChI for compounds that are "drug-like" with
+      # at least 3 carbons
+      map_int(formula_vector, ~if ("C" %in% names(.x)) .x[["C"]] else 0L) >= 3 ~ canonical_inchi,
+      TRUE ~ raw_inchi
+    )
+  )
+
+write_rds(
+  compounds_selected,
+  file.path(dir_release, "all_compounds_canonical.rds"),
+  compress = "gz"
 )
-
+# compounds_selected <- read_rds(
+#   file.path(dir_release, "all_compounds_canonical.rds")
+# )
 
 # Create molecular fingerprints ------------------------------------------------
 ###############################################################################T
@@ -60,7 +104,7 @@ fingerprinting_args <- tribble(
 )
 
 plan(multicore, workers = 10)
-cmpd_fingerprints <- compounds_canonical %>%
+cmpd_fingerprints <- compounds_selected %>%
   distinct(name = id, compound = inchi) %>%
   # Some HMSL compounds don't report inchi or smiles or anything, should have removed
   # them earlier, removing them here now
@@ -78,7 +122,11 @@ cmpd_fingerprints <- compounds_canonical %>%
     )
   )
 
-write_rds(cmpd_fingerprints %>% select(-compounds), file.path(dir_release, "all_compounds_fingerprints_raw.rds"))
+write_rds(
+  cmpd_fingerprints %>% select(-compounds),
+  file.path(dir_release, "all_compounds_fingerprints_raw.rds"),
+  compress = "gz"
+)
 # cmpd_fingerprints <- read_rds(file.path(dir_release, "all_compounds_fingerprints_raw.rds"))
 
 # Check if any errors occured
@@ -97,18 +145,23 @@ cmpd_fingerprints_all <- cmpd_fingerprints %>%
   group_nest(fp_name, fp_type)
 
 
-skipped_cmpds <- compounds_canonical %>%
+skipped_cmpds <- compounds_selected %>%
   anti_join(
     cmpd_fingerprints_all %>%
       unnest(data),
     by = "id"
   )
 
-write_csv(skipped_cmpds, file.path(dir_release, "all_compounds_fingerprints_skipped.csv"))
+write_rds(
+  skipped_cmpds,
+  file.path(dir_release, "all_compounds_fingerprints_skipped.rds"),
+  compress = "gz"
+)
 
 write_rds(
   cmpd_fingerprints_all,
-  file.path(dir_release, "all_compounds_fingerprints.rds")
+  file.path(dir_release, "all_compounds_fingerprints.rds"),
+  compress = "gz"
 )
 
 # Store to synapse -------------------------------------------------------------
@@ -118,7 +171,9 @@ fingerprint_activity <- Activity(
   name = "Calculate molecular fingerprints",
   used = c(
     "syn20692439",
-    "syn20692442"
+    "syn20692442",
+    "syn20692440",
+    "syn20692443"
   ),
   executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/id_mapping/03_fingerprints.R"
 )
@@ -129,7 +184,7 @@ fp_folder <- Folder("fingerprints", syn_release) %>%
 
 c(
   file.path(dir_release, "all_compounds_fingerprints.rds"),
-  file.path(dir_release, "all_compounds_canonical.csv.gz"),
-  file.path(dir_release, "all_compounds_fingerprints_skipped.csv")
+  file.path(dir_release, "all_compounds_canonical.rds"),
+  file.path(dir_release, "all_compounds_fingerprints_skipped.rds")
 ) %>%
   synStoreMany(parent = fp_folder, activity = fingerprint_activity)
