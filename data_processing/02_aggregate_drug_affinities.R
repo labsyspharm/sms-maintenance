@@ -154,20 +154,32 @@ write_rds(
 calculate_q1 <- function(data) {
   data %>%
     as.data.table() %>%
-    .[
-      ,
-      .(
-        Q1 = round(quantile(value, 0.25, names = FALSE), 2),
-        n_measurement = .N,
-        references = paste(
-          recode(unique(.SD)[["reference_type"]], pubmed_id = "pubmed", patent_id = "patent", chembl_id = "chembl", synapse_id = "synapse"),
-          unique(.SD)[["reference_id"]],
-          sep = ":",
-          collapse = "|"
+    {
+      .[
+        ,
+        reference_type := recode(
+          reference_type,
+          pubmed_id = "pubmed", patent_id = "patent", chembl_id = "chembl", synapse_id = "synapse"
         )
-      ),
-      by = .(lspci_id, entrez_gene_id)
-    ] %>%
+      ][
+        ,
+        .(
+          Q1 = round(quantile(value, 0.25, names = FALSE), 2),
+          n_measurement = .N,
+          references = .SD[, .(reference_type, reference_id)] %>%
+            unique() %>%
+            with(
+              paste(
+                reference_type,
+                reference_id,
+                sep = ":",
+                collapse = "|"
+              )
+            )
+        ),
+        by = .(lspci_id, entrez_gene_id)
+      ]
+    } %>%
     as_tibble()
 }
 
@@ -278,20 +290,32 @@ hmsl_kinomescan_q1 <- hmsl_kinomescan_mapped %>%
       data,
       ~.x %>%
         as.data.table() %>%
-        .[
-          ,
-          .(
-            percent_control_Q1 = quantile(percent_control, 0.25, names = FALSE),
-            n_measurement = .N,
-            references = paste(
-              unique(recode(reference_type, pubmed_id = "pubmed", patent_id = "patent", chembl_id = "chembl")),
-              unique(reference_id),
-              sep = ":",
-              collapse = "|"
+        {
+          .[
+            ,
+            reference_type := recode(
+              reference_type,
+              pubmed_id = "pubmed", patent_id = "patent", chembl_id = "chembl", synapse_id = "synapse"
             )
-          ),
-          by = .(lspci_id, entrez_gene_id, cmpd_conc_nM)
-        ] %>%
+          ][
+            ,
+            .(
+              percent_control_Q1 = quantile(percent_control, 0.25, names = FALSE),
+              n_measurement = .N,
+              references = .SD[, .(reference_type, reference_id)] %>%
+                unique() %>%
+                with(
+                  paste(
+                    reference_type,
+                    reference_id,
+                    sep = ":",
+                    collapse = "|"
+                  )
+                )
+            ),
+            by = .(lspci_id, entrez_gene_id, cmpd_conc_nM)
+          ]
+        } %>%
         as_tibble()
     )
   )
@@ -341,21 +365,33 @@ pheno_data_q1 <- pheno_data_formatted %>%
       data,
       ~.x %>%
         as.data.table() %>%
-        .[
-          ,
-          .(
-            standard_value_Q1 = quantile(value, 0.25, names = FALSE),
-            log10_value_Q1 = quantile(log10(value), 0.25, names = FALSE),
-            n_measurement = .N,
-            references = paste(
-              recode(unique(.SD)[["reference_type"]], pubmed_id = "pubmed", patent_id = "patent", chembl_id = "chembl"),
-              unique(.SD)[["reference_id"]],
-              sep = ":",
-              collapse = "|"
+        {
+          .[
+            ,
+            reference_type := recode(
+              reference_type,
+              pubmed_id = "pubmed", patent_id = "patent", chembl_id = "chembl", synapse_id = "synapse"
             )
-          ),
-          by = .(lspci_id, assay_id)
-        ] %>%
+            ][
+            ,
+            .(
+              standard_value_Q1 = quantile(value, 0.25, names = FALSE),
+              log10_value_Q1 = quantile(log10(value), 0.25, names = FALSE),
+              n_measurement = .N,
+              references = .SD[, .(reference_type, reference_id)] %>%
+                unique() %>%
+                with(
+                  paste(
+                    reference_type,
+                    reference_id,
+                    sep = ":",
+                    collapse = "|"
+                  )
+                )
+            ),
+            by = .(lspci_id, assay_id)
+          ]
+        } %>%
         as_tibble()
     )
   )
