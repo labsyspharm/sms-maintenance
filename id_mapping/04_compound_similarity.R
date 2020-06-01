@@ -4,7 +4,6 @@ library(here)
 library(synapser)
 library(synExtra)
 library(lspcheminf)
-library(arrangements)
 library(future.apply)
 
 synLogin()
@@ -17,10 +16,10 @@ syn_release <- synFindEntityId(release, "syn18457321")
 # Loading files ----------------------------------------------------------------
 ###############################################################################T
 
-cmpds_canonical <- syn("syn20821730") %>%
-  read_csv()
-
 all_compounds_fingerprints <- syn("syn20692501") %>%
+  read_rds()
+
+compounds_canonical <- syn("syn22080194") %>%
   read_rds()
 
 # Calculate similarity between all compounds -----------------------------------
@@ -88,7 +87,7 @@ write_rds(
 # matches and one of the Morgan FPs and that their molecular mass is identical
 
 plan(multicore(workers = 18))
-cmpd_mass_raw <- cmpds_canonical %>%
+cmpd_mass_raw <- compounds_canonical %>%
   distinct(inchi) %>%
   drop_na(inchi) %>%
   chunk_df(18*3) %>%
@@ -103,13 +102,13 @@ cmpd_mass_raw <- cmpds_canonical %>%
 
 cmpd_mass <- cmpd_mass_raw %>%
   left_join(
-    cmpds_canonical %>%
-      select(source_name, id, inchi),
+    compounds_canonical %>%
+      select(source, id, inchi),
     by = c("compound" = "inchi")
   )
 
 cmpd_mass_map <- cmpd_mass %>%
-  distinct(source_name, id, mass)
+  distinct(source, id, mass)
 
 write_csv(
   cmpd_mass_map,
@@ -123,7 +122,7 @@ activity <- Activity(
   name = "Calculate chemical similarity between all compounds",
   used = c(
     "syn20692501",
-    "syn20821730"
+    "syn22080194"
   ),
   executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/id_mapping/04_compound_similarity.R"
 )

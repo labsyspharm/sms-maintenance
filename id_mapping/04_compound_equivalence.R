@@ -19,10 +19,13 @@ syn_release <- synFindEntityId(release, "syn18457321")
 similarity_df <- syn("syn21904674") %>%
   read_rds()
 
-hmsl_cmpds <- syn("syn20692443") %>%
+cmpds_canonical <- syn("syn22080194") %>%
   read_rds()
 
-chembl_cmpds <- syn("syn20692440") %>%
+cmpds_hms_raw <- syn("syn20692443") %>%
+  read_rds()
+
+cmpds_chembl_raw <- syn("syn20692440") %>%
   read_rds()
 
 cmpd_mass <- syn("syn21572844") %>%
@@ -34,12 +37,17 @@ cmpd_mass <- syn("syn21572844") %>%
 # Only done for compounds where for some reason no comparison based on molecular
 # fingerprint was possible. Eg. no Inchi was provided in Reagent Tracker
 
+norm_drug <- function(x) {
+  x %>%
+    str_to_lower() %>%
+    str_replace_all("[^a-zA-Z0-9]", "")
+}
 
 hmsl_name_matches <- similarity_df %>%
   mutate(
     data = map(
       data,
-      ~hmsl_cmpds %>%
+      ~cmpds_hms_raw %>%
         filter(
           !hms_id %in% (
             .x %>%
@@ -50,12 +58,12 @@ hmsl_name_matches <- similarity_df %>%
           )
         ) %>%
         mutate(
-          name = str_to_lower(name)
+          name = norm_drug(name)
         ) %>%
         select(-chembl_id) %>%
         left_join(
-          chembl_cmpds %>%
-            transmute(chembl_id, pref_name = str_to_lower(pref_name)),
+          cmpds_chembl_raw %>%
+            transmute(chembl_id, pref_name = norm_drug(pref_name)),
           by = c("name" = "pref_name")
         ) %>%
         drop_na(chembl_id) %>%
@@ -146,10 +154,10 @@ identity_df_combined_nested <- identity_df_combined %>%
   # Augmenting identity map with data from the Chembl parent annotation
   # These are added regardles of fingerprint or mass matches
   bind_rows(
-    chembl_cmpds %>%
+    cmpds_chembl_raw %>%
       filter(molregno != parent_molregno) %>%
       left_join(
-        chembl_cmpds %>%
+        cmpds_chembl_raw %>%
           select(molregno, match = chembl_id),
         by = c("parent_molregno" = "molregno")
       ) %>%
@@ -179,10 +187,10 @@ cmpd_eq_classes <- identity_df_combined_nested %>%
 # find using our canonicalization followed by fingerprint matching approach.
 
 # Augmenting identity map with data from the Chembl parent annotation
-chembl_cmpds_with_parent <- chembl_cmpds %>%
+chembl_cmpds_with_parent <- cmpds_chembl_raw %>%
   filter(molregno != parent_molregno) %>%
   left_join(
-    chembl_cmpds %>%
+    cmpds_chembl_raw %>%
       select(molregno, parent_chembl_id = chembl_id, parent_standard_inchi = standard_inchi),
     by = c("parent_molregno" = "molregno")
   ) %>%
@@ -237,14 +245,8 @@ all_eq_class <- cmpd_eq_classes %>%
     data = map(
       data,
       add_missing_eq_class,
-      compound_df = bind_rows(
-        chembl_cmpds %>%
-          distinct(id = chembl_id) %>%
-          mutate(source = "chembl"),
-        hmsl_cmpds %>%
-          distinct(id = hms_id) %>%
-          mutate(source = "hmsl")
-      )
+      compound_df = cmpds_canonical %>%
+        distinct(id)
     )
   )
 
@@ -261,6 +263,7 @@ activity <- Activity(
   name = "Calculate compound equivalence classes",
   used = c(
     "syn21904674",
+    "syn22080194",
     "syn20692443",
     "syn20692440",
     "syn21572844"

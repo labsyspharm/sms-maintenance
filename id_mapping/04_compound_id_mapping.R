@@ -17,22 +17,22 @@ syn_release <- synFindEntityId(release, "syn18457321")
 # Loading files ----------------------------------------------------------------
 ###############################################################################T
 
-hmsl_cmpds <- syn("syn20692443") %>%
+cmpds_canonical <- syn("syn22080194") %>%
   read_rds()
 
-chembl_cmpds <- syn("syn20692440") %>%
+cmpds_hms_raw <- syn("syn20692443") %>%
+  read_rds()
+
+cmpds_chembl_raw <- syn("syn20692440") %>%
   read_rds()
 
 eq_classes <- syn("syn20830516") %>%
-  read_rds()
+  read_rds
+
+commercial_info <- syn("syn21901780") %>%
+  read_csv()
 
 vendor_names <- syn("syn21901782") %>%
-  read_csv()
-
-chembl_canonical <- syn("syn20692439") %>%
-  read_csv()
-
-hmsl_canonical <- syn("syn20692442") %>%
   read_csv()
 
 # Finding canonical member of equivalence class --------------------------------
@@ -86,14 +86,20 @@ canonical_members <- eq_classes %>%
       data,
       find_canonical_member,
       compound_df = bind_rows(
-        chembl_cmpds %>%
-          select(id = chembl_id, pref_name, max_phase, molregno, parent_molregno, n_assays) %>%
-          mutate_if(is.integer64, as.integer),
-        hmsl_cmpds %>%
-          select(id = hms_id, pref_name = name, n_assays = n_batches),
+        cmpds_chembl_raw %>%
+          transmute(
+            source = "chembl", id = chembl_id, pref_name, max_phase, molregno, parent_molregno, n_assays
+          ) %>%
+          mutate_if(is.integer64, as.integer) %>%
+          distinct(),
+        cmpds_hms_raw %>%
+          transmute(
+            source = "hmsl", id = hms_id, pref_name = name, n_assays = n_batches
+          ) %>%
+          distinct(),
       ) %>%
         mutate(
-          commercially_available = id %in% vendor_names[["chembl_id"]]
+          commercially_available = id %in% commercial_info[["chembl_id"]]
         )
     )
   )
@@ -117,17 +123,17 @@ NAME_SOURCE_RANKING <- list(
 )
 
 all_names <- list(
-  "chembl_pref" = chembl_cmpds %>%
+  "chembl_pref" = cmpds_chembl_raw %>%
     select(id = chembl_id, name = pref_name),
-  "chembl_alt" = chembl_cmpds %>%
+  "chembl_alt" = cmpds_chembl_raw %>%
     select(
       id = chembl_id,
       name = synonyms
     ) %>%
     unchop(name),
-  "hmsl_pref" = hmsl_cmpds %>%
+  "hmsl_pref" = cmpds_hms_raw %>%
     select(id = hms_id, name),
-  "hmsl_alt" = hmsl_cmpds %>%
+  "hmsl_alt" = cmpds_hms_raw %>%
     select(
       id = hms_id,
       name = alternate_names
@@ -180,6 +186,10 @@ write_rds(
   compress = "gz"
 )
 
+# all_names_lspci_id <- read_rds(
+#   file.path(dir_release, "all_names.rds")
+# )
+
 synStoreMany(
   c(
     file.path(dir_release, "all_names.rds")
@@ -226,16 +236,15 @@ write_rds(
   compress = "gz"
 )
 
+# canonical_names <- read_rds(
+#   file.path(dir_release, "canonical_name.rds")
+# )
+
 # Finding canonical Inchis -----------------------------------------------------
 ###############################################################################T
 
-all_inchis <- list(
-  "chembl" = chembl_canonical %>%
-    distinct(id = chembl_id, inchi),
-  "hmsl" = hmsl_canonical %>%
-    distinct(id = hms_id, inchi)
-) %>%
-  bind_rows(.id = "source") %>%
+all_inchis <- cmpds_canonical %>%
+  distinct(source, id, inchi) %>%
   # Arrange sources by most to least trust-worthy
   mutate(
     source = factor(source, levels = c("chembl", "hmsl"))
@@ -308,7 +317,19 @@ write_rds(
 # Create table of canonical compounds ------------------------------------------
 ###############################################################################T
 
-create_canonical_table <- function(members, names, inchis, smiles) {
+commercial_info_lspci_id <- eq_classes %>%
+  mutate(
+    data = map(
+      data,
+      ~commercial_info %>%
+        inner_join(
+          .x,
+          by = c("chembl_id" = "id")
+        )
+    )
+  )
+
+create_canonical_table <- function(members, names, inchis, smiles, commercial) {
   members %>%
     select(eq_class, source, id) %>%
     mutate(source = paste0(source, "_id")) %>%
@@ -329,6 +350,9 @@ create_canonical_table <- function(members, names, inchis, smiles) {
     rename(
       lspci_id = eq_class,
       hms_id = hmsl_id
+    ) %>%
+    mutate(
+      commercially_available = lspci_id %in% commercial[["eq_class"]] | !is.na(hms_id)
     ) %>%
     # Remove empty lists and replace with NULL
     mutate(
@@ -356,9 +380,14 @@ canonical_table <- canonical_members %>%
       rename(smiles = data),
     by = c("fp_name", "fp_type")
   ) %>%
+  left_join(
+    commercial_info_lspci_id %>%
+      rename(commercial = data),
+    by = c("fp_name", "fp_type")
+  ) %>%
   mutate(
     data = pmap(
-      list(members, names, inchis, smiles),
+      list(members, names, inchis, smiles, commercial),
       create_canonical_table
     )
   )
@@ -382,19 +411,17 @@ canonical_table %>%
   transmute(fp_name, fp_type, lspci_id, chembl_id = !is.na(chembl_id), hms_id = !is.na(hms_id)) %>%
   group_by(fp_name, fp_type, chembl_id, hms_id) %>%
   summarize(n = n())
-# # A tibble: 9 x 5
-# # Groups:   fp_name, fp_type, chembl_id [6]
 # fp_name            fp_type     chembl_id hms_id       n
 # <chr>              <chr>       <lgl>     <lgl>    <int>
-# 1 morgan_chiral      morgan      FALSE     TRUE       183
-# 2 morgan_chiral      morgan      TRUE      FALSE  1757877
-# 3 morgan_chiral      morgan      TRUE      TRUE      1799
-# 4 morgan_normal      morgan      FALSE     TRUE        94
-# 5 morgan_normal      morgan      TRUE      FALSE  1696169
-# 6 morgan_normal      morgan      TRUE      TRUE      1871
-# 7 topological_normal topological FALSE     TRUE        94
-# 8 topological_normal topological TRUE      FALSE  1694947
-# 9 topological_normal topological TRUE      TRUE      1871
+#   1 morgan_chiral      morgan      FALSE     TRUE       192
+# 2 morgan_chiral      morgan      TRUE      FALSE  1746039
+# 3 morgan_chiral      morgan      TRUE      TRUE      1901
+# 4 morgan_normal      morgan      FALSE     TRUE       138
+# 5 morgan_normal      morgan      TRUE      FALSE  1684245
+# 6 morgan_normal      morgan      TRUE      TRUE      1938
+# 7 topological_normal topological FALSE     TRUE       138
+# 8 topological_normal topological TRUE      FALSE  1683073
+# 9 topological_normal topological TRUE      TRUE      1938
 
 rt_map <- read_csv(
   here("rt_chembl_matches_20190617.txt")
@@ -473,9 +500,9 @@ cmpd_wrangling_activity <- Activity(
     "syn20692440",
     "syn20692514",
     "syn20830516",
-    "syn20692439",
-    "syn20692442",
-    "syn21901782"
+    "syn21901782",
+    "syn22080194",
+    "syn21901780"
   ),
   executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/id_mapping/04_compound_id_mapping.R"
 )
