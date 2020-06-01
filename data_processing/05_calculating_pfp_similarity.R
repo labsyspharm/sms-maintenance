@@ -46,7 +46,7 @@ calculate_r_score_per_assay <- function(df) {
 }
 
 calculate_r_score <- function(df) {
-  plan(multicore(workers = 8))
+  plan(multisession(workers = 8))
   df %>%
     group_nest(assay_id) %>%
     mutate(

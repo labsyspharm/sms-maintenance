@@ -31,7 +31,7 @@ literature_annotations_raw <- syn("syn20694521") %>%
   mutate(hms_id = paste0("HMSL", hms_id))
 
 gene_map <- syn("syn20693721") %>%
-  read_csv(col_types = "ciciccciccccc")
+  read_csv(col_types = "cicicccicccccc")
 
 compound_map <- syn("syn20835543") %>%
   read_rds()
@@ -248,7 +248,7 @@ gene_info <- vroom(
     "map_location", "entrez_description", "entrez_type_of_gene", "symbol", "entrez_name", "nomenclature_status",
     "other_designations", "modification_date", "feature_type"
   ),
-  col_types = "iic_c___cc_c____",
+  col_types = "iic_c___cccc____",
   skip = 1
 )
 
@@ -286,7 +286,7 @@ tas_vector_annotated_long <- tas_vector %>%
       ~.x %>%
         left_join(
           .y %>%
-            select(compound_id = id, compound_id_source = source, lspci_id = eq_class),
+            select(compound_id = id, lspci_id = eq_class),
           by = "lspci_id"
         )%>%
         left_join(
@@ -300,7 +300,6 @@ tas_vector_annotated_long <- tas_vector %>%
         select(
           lspci_id,
           compound_id,
-          compound_id_source,
           entrez_gene_id,
           entrez_symbol,
           starts_with("tas")

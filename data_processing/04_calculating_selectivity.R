@@ -120,7 +120,7 @@ activities_lspci_id_geneid <- activities %>%
 
 # lspci_id_list<-dlply(activities_lspci_id_geneid,.(lspci_id),c)
 
-plan(multicore(workers = 10))
+plan(multisession(workers = 10))
 toolscore.b <- activities_lspci_id_geneid %>%
   group_nest(fp_name, fp_type, lspci_id, keep = TRUE) %>%
   mutate(
@@ -243,7 +243,7 @@ canonical_table <- syn("syn20835543") %>%
   read_rds()
 
 target_table <- syn("syn20693721") %>%
-  read_csv(col_types = "ciciccciccccc")
+  read_csv(col_types = "cicicccicccccc")
 
 selectivity_classes_annotated <- selectivity_classes %>%
   left_join(
@@ -261,7 +261,7 @@ selectivity_classes_annotated <- selectivity_classes %>%
       map(
         left_join,
         target_table %>%
-          distinct(gene_id = entrez_gene_id, gene_symbol = entrez_symbol)
+          distinct(gene_id = entrez_gene_id, gene_symbol = symbol)
       ) %>%
       map(
         select,

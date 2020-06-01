@@ -86,7 +86,7 @@ find_matches <- function(query, targets) {
     bind_rows()
 }
 
-plan(multicore(workers = 4))
+plan(multisession(workers = 8))
 probe_matches <- compound_table %>%
   mutate(
     data = map(
