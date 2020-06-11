@@ -1,7 +1,7 @@
 library(tidyverse)
 library(here)
 library(furrr)
-library(lspcheminf)
+library(morgancpp)
 library(synapser)
 library(synExtra)
 
@@ -46,34 +46,32 @@ fps_selective <- canonical_fps %>%
       ~filter(
         ..1,
         fp_name == ..2,
-        lspci_id %in% filter(..3, selectivity_class %in% c("most_selective", "semi_selective"))$lspci_id
+        lspci_id %in% {
+          filter(..3, selectivity_class %in% c("most_selective", "semi_selective")) %>%
+            pull(lspci_id)
+        }
       ) %>%
         select(fingerprint, lspci_id)
     )
   )
 
-
-plan(multicore(workers = 8))
 chemical_sim_selective <- fps_selective %>%
   mutate(
-    data = future_map(
+    data = map(
       data,
-      ~chemical_similarity_threshold(
-        set_names(.x[["fingerprint"]], .x[["lspci_id"]]),
-        precalculated = TRUE,
-        threshold = 0.2
-      ) %>%
-        mutate_at(
-          vars(query, target),
-          as.integer
-        ) %>%
-        distinct(
-          lspci_id_1 = if_else(query > target, target, query),
-          lspci_id_2 = if_else(query > target, query, target),
-          tanimoto_similarity = score
-        ) %>%
-        arrange(lspci_id_1, lspci_id_2),
-      progress = TRUE
+      function(df) {
+        fps <- MorganFPS$new(
+          with(df, set_names(fingerprint, lspci_id))
+        )
+        set_names(df[["lspci_id"]]) %>%
+          map(~fps$tanimoto_all(.x)) %>%
+          bind_rows(.id = "query") %>%
+          select(lspci_id_1 = query, lspci_id_2 = id, tanimoto_similarity = structural_similarity) %>%
+          mutate_at(vars(starts_with("lspci_id")), as.integer) %>%
+          filter(lspci_id_1 < lspci_id_2, tanimoto_similarity > 0.2) %>%
+          arrange(lspci_id_1, lspci_id_2) %>%
+          as_tibble()
+      }
     )
   )
 
@@ -99,31 +97,37 @@ find_optimal_compounds <- function(
         rename_all(paste0, "_1")
     )
   }
-  # Check all possible combinations of compounds
-  combn(
-    sort(unique(selectivity$lspci_id)), 2, simplify = TRUE
+  ranking <- selectivity %>%
+    arrange(
+      desc(as.integer(commercially_available)),
+      as.integer(selectivity_class),
+      desc(tool_score),
+      ontarget_IC50_Q1
+    )
+  best_lspci_id <- ranking$lspci_id[[1]]
+  # Check if there's another compound with <threshold similarity to best one
+  combinations <- tibble(
+    lspci_id_1 = if_else(best_lspci_id < ranking$lspci_id, best_lspci_id, ranking$lspci_id),
+    lspci_id_2 = if_else(best_lspci_id > ranking$lspci_id, best_lspci_id, ranking$lspci_id)
   ) %>%
-    t() %>%
-    `colnames<-`(c("lspci_id_1", "lspci_id_2")) %>%
-    as_tibble() %>%
+    filter(lspci_id_1 != lspci_id_2) %>%
     # Get rid of all compound combinations that have similarity of >threshold,
     # Those are listed in the chemical_similarity data frame
-    anti_join(chemical_similarity, by = c("lspci_id_1", "lspci_id_2")) %>%
-    left_join(
-      rename_all(selectivity, paste0, "_1"),
-      by = "lspci_id_1"
-    ) %>%
-    left_join(
-      rename_all(selectivity, paste0, "_2"),
-      by = "lspci_id_2"
-    ) %>%
-    mutate(tool_score_sum = tool_score_1 + tool_score_2) %>%
-    arrange(
-      desc(as.integer(commercially_available_1) + as.integer(commercially_available_2)),
-      as.integer(selectivity_class_1) + as.integer(selectivity_class_2),
-      desc(tool_score_sum),
-      ontarget_IC50_Q1_1 + ontarget_IC50_Q1_2
-    )
+    anti_join(chemical_similarity, by = c("lspci_id_1", "lspci_id_2"))
+  bind_cols(
+    ranking[1, ] %>%
+      rename_all(paste0, "_1"),
+    if (nrow(combinations) > 0)
+      ranking %>%
+        filter(
+          lspci_id == combinations[[1, "lspci_id_1"]] |
+            lspci_id == combinations[[1, "lspci_id_2"]],
+          lspci_id != best_lspci_id
+        ) %>%
+        rename_all(paste0, "_2")
+    else
+      NULL
+  )
 }
 
 find_optimal_compounds_all_targets <- function(
@@ -145,16 +149,13 @@ find_optimal_compounds_all_targets <- function(
     # filter(map_lgl(data, ~nrow(.x) >= 2)) %>%
     transmute(
       gene_id,
-      all_pairs = map(
+      best_pair = map(
         data,
         find_optimal_compounds, chemical_sim_filtered
-      ),
-      best_pair = map(
-        all_pairs,
-        slice, 1
       )
     ) %>%
-    unnest(best_pair)
+    unnest(best_pair) %>%
+    mutate(reason_included = "selectivity")
   cmpds
 }
 
@@ -180,16 +181,81 @@ write_rds(
 # Criteria clinical phase >=1 and affinity IC50_Q1 <= 1 uM
 clinical_compounds <- clinical_info %>%
   left_join(rename(affinity, affinity_df = data), by = c("fp_type", "fp_name")) %>%
+  left_join(rename(selectivity, selectivity_df = data), by = c("fp_type", "fp_name")) %>%
+  left_join(rename(commercial_info, commercial_info_df = data), by = c("fp_type", "fp_name")) %>%
   mutate(
-    data = map2(
-      data, affinity_df,
+    data = pmap(
+      list(data, affinity_df, selectivity_df, commercial_info_df),
       ~inner_join(
-        distinct(.x, lspci_id, max_phase),
-        filter(.y, Q1 <= 1000),
+        distinct(..1, lspci_id, max_phase) %>%
+          drop_na() %>%
+          filter(max_phase >= 1),
+        bind_rows(
+          ..3,
+          anti_join(
+              ..2 %>%
+                select(lspci_id, gene_id = entrez_gene_id, ontarget_IC50_Q1 = Q1, ontarget_IC50_N = n_measurement),
+              ..3,
+              by = c("lspci_id", "gene_id")
+            )
+        ) %>%
+          filter(ontarget_IC50_Q1 <= 1000),
         by = "lspci_id"
-      )
+      ) %>%
+        mutate(reason_included = "clinical", commercially_available = lspci_id %in% ..4[["lspci_id"]])
     )
   )
+
+write_rds(
+  clinical_compounds %>%
+    select(fp_name, fp_type, data),
+  file.path(dir_release, "clinical_library.rds"),
+  compress = "gz"
+)
+
+# Combine libraries ------------------------------------------------------------
+###############################################################################T
+
+optimal_libraries_combined <- optimal_libraries %>%
+  inner_join(
+    select(clinical_compounds, fp_type, fp_name, clinical = data)
+  ) %>%
+  mutate(
+    data = pmap(
+      list(data, clinical),
+      ~bind_rows(
+        ..1 %>%
+          select(gene_id, reason_included, ends_with("_1")) %>%
+          rename_all(str_replace, fixed("_1"), ""),
+        ..1 %>%
+          select(gene_id, reason_included, ends_with("_2")) %>%
+          rename_all(str_replace, fixed("_2"), "")
+      ) %>%
+        mutate(selectivity_class = factor(selectivity_class, levels = levels(..2[["selectivity_class"]]))) %>%
+        bind_rows(
+          anti_join(..2, ., by = c("lspci_id", "gene_id")) %>%
+            select(gene_id, lspci_id, reason_included, selectivity_class, tool_score, ontarget_IC50_Q1, commercially_available)
+        ) %>%
+        arrange(
+          gene_id,
+          desc(as.integer(commercially_available)),
+          as.integer(selectivity_class),
+          desc(tool_score),
+          ontarget_IC50_Q1
+        ) %>%
+        group_by(gene_id) %>%
+        mutate(rank = 1:n()) %>%
+        ungroup()
+    )
+  )
+
+write_rds(
+  optimal_libraries_combined %>%
+    select(fp_name, fp_type, data),
+  file.path(dir_release, "optimal_library_combined.rds"),
+  compress = "gz"
+)
+
 
 # Calculate liganded genome ----------------------------------------------------
 ###############################################################################T
@@ -206,7 +272,7 @@ clinical_compounds <- clinical_info %>%
 # Subset optimal library to contain only kinase targets ------------------------
 ###############################################################################T
 
-optimal_kinase_libraries <- optimal_libraries %>%
+optimal_kinase_libraries <- optimal_libraries_combined %>%
   mutate(
     data = map(
       data,
@@ -219,7 +285,7 @@ optimal_kinase_libraries <- optimal_libraries %>%
 write_rds(
   optimal_kinase_libraries %>%
     select(fp_type, fp_name, data),
-  file.path(dir_release, "optimal_kinase_library.rds"),
+  file.path(dir_release, "optimal_kinase_library_combined.rds"),
   compress = "gz"
 )
 
@@ -245,7 +311,10 @@ syn_library_folder <- Folder("compound_library", parent = syn_release) %>%
 
 c(
   file.path(dir_release, "optimal_library.rds"),
-  file.path(dir_release, "optimal_kinase_library.rds")
+  file.path(dir_release, "optimal_kinase_library.rds"),
+  file.path(dir_release, "clinical_library.rds"),
+  file.path(dir_release, "optimal_library_combined.rds"),
+  file.path(dir_release, "optimal_kinase_library_combined.rds")
 ) %>%
   synStoreMany(parentId = syn_library_folder, activity = library_activity)
 
