@@ -19,18 +19,50 @@ syn_release <- synFindEntityId(release, "syn18457321")
 # on the fingerprinting algo
 
 tables <- tribble(
-  ~name, ~synapse_id, ~used,
-  # "lsp_compound_dictionary", "syn20835543", "syn21049601",
-  # # "lsp_target_dictionary", "syn20693721", NULL,
-  # "lsp_biochem", "syn20830825", NULL,
-  # "lsp_phenotypic_chembl", "syn20976900", NULL,
-  # "lsp_tas", "syn20830939", NULL,
-  # "lsp_specificity", "syn20836653", NULL,
-  # "lsp_one_dose_scans", "syn20830835", NULL,
+  ~name, ~synapse_id, ~used, ~fun,
+  "lsp_compound_dictionary", "syn20835543", NULL, function(x)
+    select(x, lspci_id, hmsl_id = hms_id, chembl_id, pref_name, inchi, smiles, commercially_available),
+  "lsp_biochem", "syn20830825", NULL, function(x)
+    select(x, lspci_id, gene_id = entrez_gene_id, description_assay, value, value_unit, value_type, value_relation, reference_id, reference_type, url = file_url),
+  "lsp_compound_names", "syn22035396", NULL, function(x)
+    transmute(x, lspci_id, source = str_split_fixed(source, fixed("_"), 2)[, 1], priority = source_collapsed, name),
+  "lsp_compound_mapping", "syn20830516", NULL, function(x)
+    transmute(x, lspci_id = eq_class, source = if_else(str_starts(id, fixed("CHEMBL")), "chembl", "hmsl"), id),
+  "lsp_phenotypic_chembl", "syn20976900", NULL, function(x)
+    select(x, lspci_id, assay_id, description_assay, value, value_unit, value_type, value_relation, reference_id, reference_type, url = file_url),
+  "lsp_tas", "syn20830939", NULL, function(x) select(x, lspci_id, gene_id = entrez_gene_id, tas),
+  "lsp_specificity", "syn20836653", NULL, function(x)
+    distinct(
+      x, lspci_id, gene_id, selectivity_class, investigation_bias, strength,
+      wilcox_pval, selectivity, tool_score, IC50_difference = IC50_diff,
+      ontarget_IC50_Q1, offtarget_IC50_Q1, ontarget_N = ontarget_IC50_N, offtarget_N = offtarget_IC50_N
+    ),
+  "lsp_one_dose_scans", "syn20830835", NULL, function(x)
+    transmute(
+      x, lspci_id, gene_id = entrez_gene_id, percent_control, description, cmpd_conc_nM,
+      reference_id, reference_type = recode(reference_type, synapse = "synapse_id", hms_lincs = "hmsl_id"),
+      url = file_url
+    ) %>%
+    distinct(),
   # "lsp_tas_similarity", "syn21052803", NULL,
-  # "lsp_clinical_info", "syn21064122", NULL,
-  # "lsp_commercial_availability", "syn21049601", NULL
-  "lsp_fingerprints", "syn21042105", NULL
+  "lsp_clinical_info", "syn21064122", NULL, function(x)
+    mutate_at(
+      x,
+      vars(oral, parenteral, topical, black_box_warning, first_in_class, prodrug, withdrawn_flag),
+      magrittr::equals, 1
+    ) %>%
+    distinct(
+      lspci_id, max_phase, first_approval, oral, parenteral, topical, black_box_warning,
+      first_in_class, prodrug, indication_class, withdrawn_flag, withdrawn_year, withdrawn_country,
+      withdrawn_reason, max_phase_for_indication, mesh_id, mesh_heading, efo_id, efo_term,
+      reference_type = ref_type, reference_id = ref_id, url = ref_url
+    ),
+  "lsp_commercial_availability", "syn21049601", NULL, function(x)
+    distinct(x, lspci_id, vendor, id = vendor_id, name = vendor_name),
+  "lsp_fingerprints", "syn21042105", NULL, function(x)
+    select(x, lspci_id, fingerprint_type = fp_name, fingerprint),
+  "lsp_compound_library", "syn22153734", NULL, function(x)
+    select(x, lspci_id, gene_id, rank, reason_included)
 ) %>%
   mutate(
     data = map(
@@ -38,6 +70,14 @@ tables <- tribble(
       . %>%
         syn() %>%
         read_rds()
+    )
+  )
+
+tables_formatted <- tables %>%
+  mutate(
+    data = map2(
+      data, fun,
+      ~mutate_at(.x, vars(data), map, .y)
     )
   )
 
@@ -50,36 +90,7 @@ dirs_tables <- tables$data[[1]]$fp_name %>%
 dirs_tables %>%
   walk(dir.create, showWarnings = FALSE)
 
-# Add commercial availability to compound dictionary
-compound_dict <- tables %>%
-  filter(name %in% c("lsp_compound_dictionary", "lsp_commercial_availability")) %>%
-  unnest(data) %>%
-  select(fp_type, fp_name, name, data) %>%
-  spread(name, data) %>%
-  mutate(
-    lsp_compound_dictionary = map2(
-      lsp_compound_dictionary, lsp_commercial_availability,
-      ~mutate(
-          .x,
-          commercially_available = .x$lspci_id %in% .y$lspci_id
-        )
-    )
-  ) %>%
-  select(fp_type, fp_name, lsp_compound_dictionary) %>%
-  gather("name", "data", lsp_compound_dictionary) %>%
-  group_nest(name)
-
-# Add modified compound dict back to list of tables
-tables_mod <- bind_rows(
-  tables %>%
-    filter(name %in% compound_dict$name) %>%
-    select(-data) %>%
-    left_join(compound_dict),
-  tables %>%
-    filter(!(name %in% compound_dict$name))
-)
-
-tables_long <- tables_mod %>%
+tables_long <- tables_formatted %>%
   unnest(data) %>%
   mutate(
     fn = file.path(
