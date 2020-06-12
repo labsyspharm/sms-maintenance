@@ -403,7 +403,7 @@ COMMENT ON COLUMN "LSP_TAS"."gene_id" IS 'Foreign key for gene ID';
 
 COMMENT ON COLUMN "LSP_TAS"."tas" IS 'Target Affinity Spectrum (TAS). A number between 1 and 10 for the affinity between compound and target. 1 being most strongly binding.';
 
-COMMENT ON TABLE "LSP_SPECIFICITY" IS 'Table of Target Affinity Spectrum (TAS) values for the affinity between     compound and target. TAS enables aggregation of affinity measurements from     heterogeneous sources and assays into a single value. See     10.1016/j.chembiol.2019.02.018 for details.';
+COMMENT ON TABLE "LSP_SPECIFICITY" IS 'Table of specificity assertions of compounds to their targets. See     10.1016/j.chembiol.2019.02.018 for details.';
 
 COMMENT ON COLUMN "LSP_SPECIFICITY"."lspci_id" IS 'Foreign key for compound ID';
 
@@ -453,11 +453,15 @@ COMMENT ON COLUMN "LSP_COMMERCIAL_AVAILABILITY"."id" IS 'Catalog number of the c
 
 COMMENT ON COLUMN "LSP_COMMERCIAL_AVAILABILITY"."name" IS 'Compound name from the vendor, if available.';
 
+COMMENT ON TABLE "LSP_FINGERPRINTS" IS 'Table of specificity assertions of compounds to their targets. See     10.1016/j.chembiol.2019.02.018 for details.';
+
 COMMENT ON COLUMN "LSP_FINGERPRINTS"."lspci_id" IS 'Foreign key for compound ID';
 
 COMMENT ON COLUMN "LSP_FINGERPRINTS"."fingerprint_type" IS 'Three different fingerprint types are available: Morgan fingerprints (either ignoring or respecting stereochemistry) or RDKit topological fingerprints (ignoring stereochemistry).';
 
-COMMENT ON COLUMN "LSP_FINGERPRINTS"."fingerprint" IS '512';
+COMMENT ON COLUMN "LSP_FINGERPRINTS"."fingerprint" IS '256 byte hex-encoded fingerprint';
+
+COMMENT ON TABLE "LSP_COMPOUND_LIBRARY" IS 'Library of optimal compounds for each target. See     10.1016/j.chembiol.2019.02.018 for details.';
 
 COMMENT ON COLUMN "LSP_COMPOUND_LIBRARY"."lspci_id" IS 'Foreign key for compound ID';
 

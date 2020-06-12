@@ -298,9 +298,7 @@ Table LSP_SPECIFICITY {
   offtarget_N int [note:"Number of offtarget IC50 measurements"]
 
   Note:'''
-    Table of Target Affinity Spectrum (TAS) values for the affinity between \
-    compound and target. TAS enables aggregation of affinity measurements from \
-    heterogeneous sources and assays into a single value. See \
+    Table of specificity assertions of compounds to their targets. See \
     10.1016/j.chembiol.2019.02.018 for details.
   '''
 
@@ -427,7 +425,12 @@ Table LSP_FINGERPRINTS {
   fingerprint_type fingerprint_types [
     note:"Three different fingerprint types are available: Morgan fingerprints (either ignoring or respecting stereochemistry) or RDKit topological fingerprints (ignoring stereochemistry)."
   ]
-  fingerprint char(512) [note:"512"]
+  fingerprint char(512) [note:"256 byte hex-encoded fingerprint"]
+
+  Note:'''
+    Table of specificity assertions of compounds to their targets. See \
+    10.1016/j.chembiol.2019.02.018 for details.
+  '''
 
   Indexes {
     lspci_id
@@ -438,7 +441,6 @@ Enum include_reasons {
   selectivity
   clinical
 }
-
 
 // done
 Table LSP_COMPOUND_LIBRARY {
@@ -453,9 +455,15 @@ Table LSP_COMPOUND_LIBRARY {
   rank int [note:"Ranking of compounds for the same target. First compound is best."]
   reason_included include_reasons [note:"Compounds can be included either because of their selectivity or because they are approved/in clinical trials."]
 
+  Note:'''
+    Library of optimal compounds for each target. See \
+    10.1016/j.chembiol.2019.02.018 for details.
+  '''
+
   Indexes {
     lspci_id
     gene_id
     (lspci_id, gene_id)
   }
 }
+
