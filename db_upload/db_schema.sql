@@ -94,7 +94,6 @@ CREATE TABLE "lsp_compound_mapping" (
 CREATE TABLE "lsp_target_dictionary" (
   "gene_id" int PRIMARY KEY,
   "symbol" varchar,
-  "pref_name" varchar,
   "description" varchar,
   "tax_id" int,
   "organism" varchar
@@ -102,6 +101,7 @@ CREATE TABLE "lsp_target_dictionary" (
 
 CREATE TABLE "lsp_target_mapping" (
   "gene_id" int,
+  "pref_name" varchar,
   "chembl_id" varchar,
   "uniprot_id" varchar
 );
@@ -331,13 +331,11 @@ COMMENT ON COLUMN "lsp_compound_mapping"."source" IS 'Source for the compound ID
 
 COMMENT ON COLUMN "lsp_compound_mapping"."id" IS 'Compound ID associated with the given lspci_id';
 
-COMMENT ON TABLE "lsp_target_dictionary" IS 'Table of drug targets. The original drug targets are mostly     annotated as ChEMBL or UniProt IDs. For convenience we converted     these IDs to Entrez gene IDs.';
+COMMENT ON TABLE "lsp_target_dictionary" IS 'Table of drug targets. The original drug targets are mostly     annotated as ChEMBL or UniProt IDs. For convenience we converted     these IDs to Entrez gene IDs. The original mapping between     ChEMBL and UniProt target IDs are in the table `lsp_target_mapping`';
 
 COMMENT ON COLUMN "lsp_target_dictionary"."gene_id" IS 'Entrez gene ID';
 
 COMMENT ON COLUMN "lsp_target_dictionary"."symbol" IS 'Entrez gene symbol';
-
-COMMENT ON COLUMN "lsp_target_dictionary"."pref_name" IS 'Preferred gene name';
 
 COMMENT ON COLUMN "lsp_target_dictionary"."description" IS 'Description of gene function';
 
@@ -345,9 +343,11 @@ COMMENT ON COLUMN "lsp_target_dictionary"."tax_id" IS 'Entrez taxonomy ID';
 
 COMMENT ON COLUMN "lsp_target_dictionary"."organism" IS 'Organism for which gene is annotated';
 
-COMMENT ON TABLE "lsp_target_mapping" IS 'Mapping between the original ChEMBL target IDs,     their corresponding UniProt IDs and Entrez gene IDs.     A signle UniProt or ChEMBL ID can refer to protein complexes,     therefore multiple gene IDs often map to the same UniProt or     ChEMBL ID.';
+COMMENT ON TABLE "lsp_target_mapping" IS 'Mapping between the original ChEMBL target IDs,     their corresponding UniProt IDs and Entrez gene IDs.     A single UniProt or ChEMBL ID can refer to protein complexes,     therefore multiple gene IDs often map to the same UniProt or     ChEMBL ID.';
 
 COMMENT ON COLUMN "lsp_target_mapping"."gene_id" IS 'Foreign key to Entrez gene ID';
+
+COMMENT ON COLUMN "lsp_target_mapping"."pref_name" IS 'Target name. Contains information about possible mutations etc.';
 
 COMMENT ON COLUMN "lsp_target_mapping"."chembl_id" IS 'ChEMBL target ID';
 

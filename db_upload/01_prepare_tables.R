@@ -19,25 +19,25 @@ syn_release <- synFindEntityId(release, "syn18457321")
 # on the fingerprinting algo
 
 tables <- tribble(
-  ~name, ~synapse_id, ~used, ~fun,
-  "lsp_compound_dictionary", "syn20835543", NULL, function(x)
+  ~name, ~synapse_id, ~used, ~sort_by, ~fun,
+  "lsp_compound_dictionary", "syn20835543", NULL, c("lspci_id"), function(x)
     select(x, lspci_id, hmsl_id = hms_id, chembl_id, pref_name, inchi, smiles, commercially_available),
-  "lsp_biochem", "syn20830825", NULL, function(x)
+  "lsp_biochem", "syn20830825", NULL, c("lspci_id", "gene_id"), function(x)
     select(x, lspci_id, gene_id = entrez_gene_id, description_assay, value, value_unit, value_type, value_relation, reference_id, reference_type, url = file_url),
-  "lsp_compound_names", "syn22035396", NULL, function(x)
+  "lsp_compound_names", "syn22035396", NULL, NULL, function(x)
     transmute(x, lspci_id, source = str_split_fixed(source, fixed("_"), 2)[, 1], priority = source_collapsed, name),
-  "lsp_compound_mapping", "syn20830516", NULL, function(x)
+  "lsp_compound_mapping", "syn20830516", NULL, c("lspci_id"), function(x)
     transmute(x, lspci_id = eq_class, source = if_else(str_starts(id, fixed("CHEMBL")), "chembl", "hmsl"), id),
-  "lsp_phenotypic_chembl", "syn20976900", NULL, function(x)
+  "lsp_phenotypic_chembl", "syn20976900", NULL, c("lspci_id", "assay_id"), function(x)
     select(x, lspci_id, assay_id, description_assay, value, value_unit, value_type, value_relation, reference_id, reference_type, url = file_url),
-  "lsp_tas", "syn20830939", NULL, function(x) select(x, lspci_id, gene_id = entrez_gene_id, tas),
-  "lsp_specificity", "syn20836653", NULL, function(x)
+  "lsp_tas", "syn20830939", NULL, c("lspci_id", "gene_id"), function(x) select(x, lspci_id, gene_id = entrez_gene_id, tas),
+  "lsp_specificity", "syn20836653", NULL, c("lspci_id", "gene_id"), function(x)
     distinct(
       x, lspci_id, gene_id, selectivity_class, investigation_bias, strength,
       wilcox_pval, selectivity, tool_score, IC50_difference = IC50_diff,
       ontarget_IC50_Q1, offtarget_IC50_Q1, ontarget_N = ontarget_IC50_N, offtarget_N = offtarget_IC50_N
     ),
-  "lsp_one_dose_scans", "syn20830835", NULL, function(x)
+  "lsp_one_dose_scans", "syn20830835", NULL, c("lspci_id", "gene_id"), function(x)
     transmute(
       x, lspci_id, gene_id = entrez_gene_id, percent_control, description, cmpd_conc_nM,
       reference_id, reference_type = recode(reference_type, synapse = "synapse_id", hms_lincs = "hmsl_id"),
@@ -45,7 +45,7 @@ tables <- tribble(
     ) %>%
     distinct(),
   # "lsp_tas_similarity", "syn21052803", NULL,
-  "lsp_clinical_info", "syn21064122", NULL, function(x)
+  "lsp_clinical_info", "syn21064122", NULL, c("lspci_id"), function(x)
     mutate_at(
       x,
       vars(oral, parenteral, topical, black_box_warning, first_in_class, prodrug, withdrawn_flag),
@@ -57,13 +57,15 @@ tables <- tribble(
       withdrawn_reason, max_phase_for_indication, mesh_id, mesh_heading, efo_id, efo_term,
       reference_type = ref_type, reference_id = ref_id, url = ref_url
     ),
-  "lsp_commercial_availability", "syn21049601", NULL, function(x)
+  "lsp_commercial_availability", "syn21049601", NULL, c("lspci_id"), function(x)
     distinct(x, lspci_id, vendor, id = vendor_id, name = vendor_name),
-  "lsp_fingerprints", "syn21042105", NULL, function(x)
+  "lsp_fingerprints", "syn21042105", NULL, c("lspci_id", "fingerprint_type"), function(x)
     select(x, lspci_id, fingerprint_type = fp_name, fingerprint),
-  "lsp_compound_library", "syn22153734", NULL, function(x)
+  "lsp_compound_library", "syn22153734", NULL, c("lspci_id", "gene_id"), function(x)
     select(x, lspci_id, gene_id, rank, reason_included)
-) %>%
+)
+
+tables_dl <- tables %>%
   mutate(
     data = map(
       synapse_id,
@@ -73,12 +75,15 @@ tables <- tribble(
     )
   )
 
-tables_formatted <- tables %>%
+process_table <- function(data, fun, sort_by, ...) {
+  data %>%
+    mutate_at(vars(data), map, fun) %>%
+    mutate_at(vars(data), map, arrange, !!!rlang::syms(sort_by))
+}
+
+tables_formatted <- tables_dl %>%
   mutate(
-    data = map2(
-      data, fun,
-      ~mutate_at(.x, vars(data), map, .y)
-    )
+    data = pmap(., process_table)
   )
 
 # write csv files --------------------------------------------------------------
@@ -150,33 +155,74 @@ pwalk(
   }
 )
 
-# Link target mapping for each fp_type
-syn_db_table_map %>%
-  pull(parent_dir) %>%
-  walk(
-    function(x) {
-      link <- Link("syn20693721", parent = x) %>%
-        synStore()
-      link$properties$name = "lsp_target_dictionary.csv.gz"
-      synStore(link)
+# Make target mapping table ----------------------------------------------------
+###############################################################################T
+
+target_dict <- syn("syn20693721") %>%
+  read_csv()
+
+target_table <- target_dict %>%
+  drop_na(entrez_gene_id) %>%
+  # Replace nonsense symbol "-" with uniprot ID
+  mutate(symbol = recode(symbol, `-` = paste0("uniprot_", uniprot_id))) %>%
+  distinct(gene_id = entrez_gene_id, symbol, tax_id, organism, description = entrez_description) %>%
+  arrange(gene_id)
+
+target_mapping <- target_dict %>%
+  drop_na(entrez_gene_id) %>%
+  distinct(gene_id = entrez_gene_id, chembl_id, target_type, uniprot_id, pref_name) %>%
+  arrange(gene_id)
+
+write_csv(target_table, file.path(dir_release, "lsp_target_dictionary.csv.gz"))
+write_csv(target_mapping, file.path(dir_release, "lsp_target_mapping.csv.gz"))
+
+target_activity <- Activity(
+  name = "Wrangle target table for postgresql import",
+  used = "syn20693721",
+  executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/db_upload/01_prepare_tables.R"
+)
+
+walk(
+  unname(synChildren(syn_db_tables_parent)),
+  function(syn_id) {
+    file.path(dir_release, c("lsp_target_dictionary.csv.gz", "lsp_target_mapping.csv.gz")) %>%
+      synStoreMany(
+        parentId = syn_id,
+        activity = target_activity
+      )
+  }
+)
+
+
+# # Link PFP correlation for each fp_type
+# x <- tribble(
+#   ~fp_name, ~syn_source,
+#   "morgan_normal", "syn21116196",
+#   "morgan_chiral", "syn21116195",
+#   "topological_normal", "syn21116206"
+# ) %>%
+#   left_join(syn_db_table_map, by = "fp_name") %>%
+#   pwalk(
+#     .,
+#     function(fp_name, syn_source, parent_dir, ...) {
+#       fn <- syn(syn_source)
+#       link <- Link(syn_source, parent = parent_dir) %>%
+#         synStore()
+#       link$properties$name = "lsp_pfp_correlation.csv.gz"
+#       synStore(link)
+#     }
+#   )
+
+# Import to PostgreSQL ---------------------------------------------------------
+###############################################################################T
+
+tables %>%
+  pwalk(
+    function(name, ...) {
+      paste0(
+        "gunzip -cd ", name, ".csv.gz | psql --command=\"COPY ", name, " FROM STDIN CSV HEADER NULL 'NA';\" sms_db"
+      ) %>%
+        message()
     }
   )
 
-# Link PFP correlation for each fp_type
-x <- tribble(
-  ~fp_name, ~syn_source,
-  "morgan_normal", "syn21116196",
-  "morgan_chiral", "syn21116195",
-  "topological_normal", "syn21116206"
-) %>%
-  left_join(syn_db_table_map, by = "fp_name") %>%
-  pwalk(
-    .,
-    function(fp_name, syn_source, parent_dir, ...) {
-      fn <- syn(syn_source)
-      link <- Link(syn_source, parent = parent_dir) %>%
-        synStore()
-      link$properties$name = "lsp_pfp_correlation.csv.gz"
-      synStore(link)
-    }
-  )
