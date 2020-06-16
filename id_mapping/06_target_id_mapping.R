@@ -195,7 +195,11 @@ map_chemblID_geneID <- chembl_map_with_entrez %>%
   ) %>%
   distinct()
 
-write_csv(map_chemblID_geneID, file.path(dir_release, "target_dictionary.csv.gz"))
+write_csv(map_chemblID_geneID, file.path(dir_release, "target_dictionary_wide.csv.gz"))
+
+# map_chemblID_geneID <- syn("syn20693721") %>% read_csv()
+
+
 
 # Store to synapse -------------------------------------------------------------
 ###############################################################################T
@@ -208,7 +212,7 @@ target_wrangling_activity <- Activity(
 syn_id_mapping <- synExtra::synPluck(syn_release, "id_mapping")
 
 list(
-  file.path(dir_release, "target_dictionary.csv.gz")
+  file.path(dir_release, "target_dictionary_wide.csv.gz")
 ) %>%
   map(
     . %>%

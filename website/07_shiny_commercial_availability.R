@@ -27,11 +27,9 @@ commercial_tables <- commercial_info %>%
     data = map(
       data,
       function(df) {
-        out <- df %>%
+        df %>%
           distinct(lspci_id, vendor, vendor_id) %>%
-          as.data.table()
-        setkey(out, lspci_id)
-        out
+          setDT(key = "lspci_id")
       }
     )
   )

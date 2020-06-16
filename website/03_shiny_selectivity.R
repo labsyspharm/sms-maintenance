@@ -22,8 +22,8 @@ selectivity_classes <- syn("syn20836653") %>%
 dose_response <- syn("syn20830834") %>%
   read_rds()
 
-# chemical_probes <- syn("syn21627808") %>%
-#   read_rds()
+chemical_probes <- syn("syn21627808") %>%
+  read_rds()
 
 # Selectivity table ------------------------------------------------------------
 ###############################################################################T

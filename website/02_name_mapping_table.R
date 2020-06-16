@@ -16,29 +16,14 @@ syn_release <- synFindEntityId(release, "syn18457321")
 
 syn_tables <- "syn20981852"
 
-eq_classes <- syn("syn20830516") %>%
+all_names <- syn("syn22035396") %>%
   read_rds()
 
-all_names <- syn("syn22035396") %>%
+id_maps <- syn("syn20830516") %>%
   read_rds()
 
 # Compound name mapping table --------------------------------------------------
 ###############################################################################T
-
-gather_names <- function(names, ids, ...) {
-  list(
-    names,
-    ids %>%
-      transmute(
-        lspci_id = eq_class,
-        name = id,
-        source = as.factor(paste0(source, "_id")),
-        source_collapsed = as.factor("secondary")
-      )
-  ) %>%
-    rbindlist(use.names = TRUE) %>%
-    setkey(lspci_id, source_collapsed)
-}
 
 make_lspci_name_mapping <- function(d) {
   d %>%
@@ -48,16 +33,48 @@ make_lspci_name_mapping <- function(d) {
     unique()
 }
 
+name_levels <- c("vendor", "chembl_pref", "hmsl_pref", "chembl_alt", "hmsl_alt", "chembl_id", "hmsl_id")
+
 name_mapping <- all_names %>%
-  rename(names = data) %>%
   inner_join(
-    rename(eq_classes, ids = data)
+    rename(id_maps, ids = data)
   ) %>%
-  transmute(
-    fp_name, fp_type,
-    data = pmap(
-      .,
-      gather_names
+  mutate(
+    data = map2(
+      data, ids,
+      ~.x %>%
+        # Remove duplicate names, only keep top source
+        group_by(lspci_id, name) %>%
+        slice(1) %>%
+        ungroup() %>%
+        mutate_at(vars(source), factor, levels = name_levels) %>%
+        bind_rows(
+          .y %>%
+            transmute(
+              lspci_id = eq_class,
+              name = id,
+              source = if_else(str_starts(id, fixed("H")), "hmsl_id", "chembl_id") %>%
+                factor(
+                  levels = name_levels
+                ),
+              source_collapsed = factor("secondary", levels = c("primary", "secondary"))
+            )
+        ) %>%
+        setDT() %>%
+        {
+          .[
+            # Prefer name with fewer spaces (no salts) and
+            # shorter name if multiple sources with same priority are available
+            order(lspci_id, source_collapsed, str_count(name, fixed(" ")), str_length(name))
+          ][
+            ,
+            # For selectize.js, the values (lspci_ids) must be unique, duplicates
+            # are silently discarded. Making a unique version by affixing -1, -2, ...
+            lspci_id_unique := paste(lspci_id, 1:.N, sep = "-"),
+            by = "lspci_id"
+          ]
+        } %>%
+        setkey(lspci_id)
     )
   ) %>%
   mutate(

@@ -51,13 +51,10 @@ compound_tables <- compounds %>%
           chembl_id,
           hms_id,
           pref_name,
-          alt_names = map_chr(
-            alt_names,
-            ~if (is.null(.x)) NA_character_ else paste(.x, collapse = "; ")
-          ),
-          max_phase
+          max_phase,
+          commercially_available
         ) %>%
-        as.data.table()
+        setDT(key = "lspci_id")
     )
   )
 
@@ -72,7 +69,6 @@ activity <- Activity(
 pwalk(
   compound_tables,
   function(data, fp_name, ...) {
-    setkey(data, lspci_id)
     write_fst(
       data,
       file.path(dir_release, paste0("shiny_compounds_", fp_name, ".fst"))
