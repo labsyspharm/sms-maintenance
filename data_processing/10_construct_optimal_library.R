@@ -81,7 +81,7 @@ write_rds(
   compress = "gz"
 )
 
-# chemical_sim_selective <- read_rds(file.path(dir_release, "chemical_sim_selective.rds"))
+chemical_sim_selective <- read_rds(file.path(dir_release, "chemical_sim_selective.rds"))
 
 # Construct optimal library ----------------------------------------------------
 ###############################################################################T
@@ -132,7 +132,7 @@ find_optimal_compounds <- function(
 
 find_optimal_compounds_all_targets <- function(
   selectivity, chemical_sim, commercial_info, maximum_tanimoto_similarity = 0.2,
-  selectivity_classes = c("most_selective", "semi_selective")
+  selectivity_classes = c("most_selective", "semi_selective", "poly_selective", "unknown_selective")
 ) {
   sel_by_gene <- selectivity %>%
     filter(selectivity_class %in% selectivity_classes) %>%
@@ -229,7 +229,8 @@ optimal_libraries_combined <- optimal_libraries %>%
           rename_all(str_replace, fixed("_1"), ""),
         ..1 %>%
           select(gene_id, reason_included, ends_with("_2")) %>%
-          rename_all(str_replace, fixed("_2"), "")
+          rename_all(str_replace, fixed("_2"), "") %>%
+          drop_na(lspci_id)
       ) %>%
         mutate(selectivity_class = factor(selectivity_class, levels = levels(..2[["selectivity_class"]]))) %>%
         bind_rows(
