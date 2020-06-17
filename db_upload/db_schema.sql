@@ -146,11 +146,11 @@ CREATE TABLE "lsp_specificity" (
   "wilcox_pval" float,
   "selectivity" float,
   "tool_score" float,
-  "IC50_difference" float,
-  "ontarget_IC50_Q1" float,
-  "offtarget_IC50_Q1" float,
-  "ontarget_N" int,
-  "offtarget_N" int
+  "ic50_difference" float,
+  "ontarget_ic50_q1" float,
+  "offtarget_ic50_q1" float,
+  "ontarget_n" int,
+  "offtarget_n" int
 );
 
 CREATE TABLE "lsp_one_dose_scans" (
@@ -158,7 +158,7 @@ CREATE TABLE "lsp_one_dose_scans" (
   "gene_id" int,
   "percent_control" float,
   "description" varchar,
-  "cmpd_conc_nM" float,
+  "concentration" float,
   "reference_id" varchar,
   "reference_type" reference_types,
   "url" varchar
@@ -411,15 +411,15 @@ COMMENT ON COLUMN "lsp_specificity"."gene_id" IS 'Foreign key for gene ID';
 
 COMMENT ON COLUMN "lsp_specificity"."selectivity_class" IS 'Assertion for the selectivity of the compound to the given target.';
 
-COMMENT ON COLUMN "lsp_specificity"."IC50_difference" IS 'Difference between ontarget and offtarget IC50 Q1 measurements';
+COMMENT ON COLUMN "lsp_specificity"."ic50_difference" IS 'Difference between ontarget and offtarget IC50 Q1 measurements';
 
-COMMENT ON COLUMN "lsp_specificity"."ontarget_IC50_Q1" IS 'First quartile of ontarget IC50 measurements';
+COMMENT ON COLUMN "lsp_specificity"."ontarget_ic50_q1" IS 'First quartile of ontarget IC50 measurements';
 
-COMMENT ON COLUMN "lsp_specificity"."offtarget_IC50_Q1" IS 'First quartile of offtarget IC50 measurements';
+COMMENT ON COLUMN "lsp_specificity"."offtarget_ic50_q1" IS 'First quartile of offtarget IC50 measurements';
 
-COMMENT ON COLUMN "lsp_specificity"."ontarget_N" IS 'Number of ontarget IC50 measurements';
+COMMENT ON COLUMN "lsp_specificity"."ontarget_n" IS 'Number of ontarget IC50 measurements';
 
-COMMENT ON COLUMN "lsp_specificity"."offtarget_N" IS 'Number of offtarget IC50 measurements';
+COMMENT ON COLUMN "lsp_specificity"."offtarget_n" IS 'Number of offtarget IC50 measurements';
 
 COMMENT ON TABLE "lsp_one_dose_scans" IS 'Table of single dose compound activity measurements as     opposed to full dose-response affinity measurements.';
 
@@ -431,7 +431,7 @@ COMMENT ON COLUMN "lsp_one_dose_scans"."percent_control" IS 'Remaining activity 
 
 COMMENT ON COLUMN "lsp_one_dose_scans"."description" IS 'Description of target.';
 
-COMMENT ON COLUMN "lsp_one_dose_scans"."cmpd_conc_nM" IS 'Concentration of the compound.';
+COMMENT ON COLUMN "lsp_one_dose_scans"."concentration" IS 'Concentration of the compound in the assay.';
 
 COMMENT ON COLUMN "lsp_one_dose_scans"."reference_id" IS 'The reference for the measurement.';
 

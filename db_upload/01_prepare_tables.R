@@ -36,10 +36,11 @@ tables <- tribble(
       x, lspci_id, gene_id, selectivity_class, investigation_bias, strength,
       wilcox_pval, selectivity, tool_score, IC50_difference = IC50_diff,
       ontarget_IC50_Q1, offtarget_IC50_Q1, ontarget_N = ontarget_IC50_N, offtarget_N = offtarget_IC50_N
-    ),
+    ) %>%
+    rename_all(str_to_lower),
   "lsp_one_dose_scans", "syn20830835", NULL, c("lspci_id", "gene_id"), function(x)
     transmute(
-      x, lspci_id, gene_id = entrez_gene_id, percent_control, description, cmpd_conc_nM,
+      x, lspci_id, gene_id = entrez_gene_id, percent_control, description, concentration = cmpd_conc_nM,
       reference_id, reference_type = recode(reference_type, synapse = "synapse_id", hms_lincs = "hmsl_id"),
       url = file_url
     ) %>%
@@ -216,11 +217,20 @@ walk(
 # Import to PostgreSQL ---------------------------------------------------------
 ###############################################################################T
 
-tables %>%
-  pwalk(
-    function(name, ...) {
+dir.create(file.path(dir_release, "db_upload"), showWarnings = FALSE)
+
+synChildren("syn20981961") %>%
+  magrittr::extract(str_ends(names(.), fixed(".csv.gz"))) %>%
+  walk(synGet, downloadLocation = file.path(dir_release, "db_upload"), ifcollision = "overwrite.local")
+
+list.files(file.path(dir_release, "db_upload"), full.names = TRUE) %>%
+  walk(
+    function(path, ...) {
+      name <- str_sub(basename(path), end = -8L)
+      colnames <- read.csv(path, nrows = 1)
       paste0(
-        "gunzip -cd ", name, ".csv.gz | psql --command=\"COPY ", name, " FROM STDIN CSV HEADER NULL 'NA';\" sms_db"
+        "gunzip -cd ", path, " | psql --command=\"COPY ", name, " (", paste("\"", names(colnames), "\"", sep = "", collapse = ", "), ")",
+        " FROM STDIN CSV HEADER NULL 'NA';\" sms_db"
       ) %>%
         message()
     }

@@ -292,11 +292,11 @@ Table lsp_specificity {
   wilcox_pval float
   selectivity float
   tool_score float
-  IC50_difference float [note:"Difference between ontarget and offtarget IC50 Q1 measurements"]
-  ontarget_IC50_Q1 float [note:"First quartile of ontarget IC50 measurements"]
-  offtarget_IC50_Q1 float [note:"First quartile of offtarget IC50 measurements"]
-  ontarget_N int [note:"Number of ontarget IC50 measurements"]
-  offtarget_N int [note:"Number of offtarget IC50 measurements"]
+  ic50_difference float [note:"Difference between ontarget and offtarget IC50 Q1 measurements"]
+  ontarget_ic50_q1 float [note:"First quartile of ontarget IC50 measurements"]
+  offtarget_ic50_q1 float [note:"First quartile of offtarget IC50 measurements"]
+  ontarget_n int [note:"Number of ontarget IC50 measurements"]
+  offtarget_n int [note:"Number of offtarget IC50 measurements"]
 
   Note:'''
     Table of specificity assertions of compounds to their targets. See \
@@ -322,7 +322,7 @@ Table lsp_one_dose_scans {
   ]
   percent_control float [note:"Remaining activity of target at the given compound concentration."]
   description varchar [note:"Description of target."]
-  cmpd_conc_nM float [note:"Concentration of the compound."]
+  concentration float [note:"Concentration of the compound in the assay."]
   reference_id varchar [note:"The reference for the measurement."]
   reference_type reference_types [note:"The source of the measurement."]
   url varchar [note:"URL to access the reference."]
