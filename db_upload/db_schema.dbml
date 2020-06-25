@@ -1,3 +1,7 @@
+Project sms_db {
+  database_type: 'PostgreSQL'
+  Note: "A database of small molecule target binding data."
+}
 
 // done
 Table lsp_compound_dictionary {
@@ -103,14 +107,27 @@ Table lsp_target_dictionary {
   }
 }
 
+Enum target_types {
+  "SINGLE PROTEIN"
+  "CHIMERIC PROTEIN"
+  "PROTEIN FAMILY"
+  "SELECTIVITY GROUP"
+  "PROTEIN COMPLEX GROUP"
+  "PROTEIN COMPLEX"
+  "PROTEIN NUCLEIC-ACID COMPLEX"
+}
+
 Table lsp_target_mapping {
   gene_id int [
     ref: > lsp_target_dictionary.gene_id,
     note:"Foreign key to Entrez gene ID"
   ]
-  pref_name varchar [note:"Target name. Contains information about possible mutations etc."]
+  pref_name varchar [
+    note:"Target name. Contains information about possible mutations etc."
+  ]
   chembl_id varchar [note:"ChEMBL target ID"]
   uniprot_id varchar [note:"UniProt ID"]
+  target_type target_types [note:"The type of the original target before translation to Entrez IDs"]
 
   Note:'''
     Mapping between the original ChEMBL target IDs, \
@@ -181,7 +198,7 @@ Table lsp_biochem {
   value_type biochem_value_types [note:"The type of measurement performed."]
   value_unit biochem_value_units [note:"The unit of the measurement."]
   value_relation biochem_value_relations [
-    note:"Some assays can't determine the measured value precisely. This column gives relationship between the actual and the measured value."
+    note:"Some assays can''t determine the measured value precisely. This column gives relationship between the actual and the measured value."
   ]
   reference_id varchar [note:"The reference for the measurement."]
   reference_type reference_types [note:"The source of the measurement."]
@@ -206,11 +223,12 @@ Table lsp_phenotypic_chembl {
   ]
   assay_id int [note:"Unique ID of the assays in the database. Correspond to ChEMBL assay IDs."]
   value float [note:"Measurement value"]
-  value_type biochem_value_types [note:"The type of measurement performed."]
+  value_type varchar [note:"The type of measurement performed."]
   value_unit biochem_value_units [note:"The unit of the measurement."]
   value_relation biochem_value_relations [
-    note:"Some assays can't determine the measured value precisely. This column gives relationship between the actual and the measured value."
+    note:"Some assays can''t determine the measured value precisely. This column gives relationship between the actual and the measured value."
   ]
+  description_assay varchar [note:"Description of the assay."]
   reference_id varchar [note:"The reference for the measurement."]
   reference_type reference_types [note:"The source of the measurement."]
   url varchar [note:"URL to access the reference."]

@@ -81,7 +81,7 @@ write_rds(
   compress = "gz"
 )
 
-chemical_sim_selective <- read_rds(file.path(dir_release, "chemical_sim_selective.rds"))
+# chemical_sim_selective <- read_rds(file.path(dir_release, "chemical_sim_selective.rds"))
 
 # Construct optimal library ----------------------------------------------------
 ###############################################################################T
@@ -168,7 +168,6 @@ optimal_libraries <- chemical_sim_selective %>%
       find_optimal_compounds_all_targets
     )
   )
-
 write_rds(
   optimal_libraries %>%
     select(fp_name, fp_type, data),

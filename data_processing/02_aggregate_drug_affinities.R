@@ -140,8 +140,19 @@ complete_table <- biochem_rowbind %>%
     # Call to distinct important, since some assays can be recorded multiple times
     # for the same eq_class now, when multiple forms of the same drug where mapped
     # to the same eq_class and an assay was stored in the db for all forms
-    data = map2(biochem, inhouse, ~bind_rows(.x, .y) %>% distinct())
+    data = map2(
+      biochem, inhouse,
+      ~bind_rows(.x, .y) %>%
+        distinct() %>%
+        # Remap obsolete entrez_ids
+        # 645840 -> 114112
+        # 348738 -> 6241
+        mutate(entrez_gene_id = recode(entrez_gene_id, `645840` = 114112L, `348738` = 6241L))
+    )
   )
+
+
+
 
 write_rds(
   complete_table %>%
@@ -274,7 +285,11 @@ hmsl_kinomescan_mapped <- all_cmpds_eq_classes %>%
           reference_id = source_assay_id,
           file_url = url
         ) %>%
-        drop_na(entrez_gene_id)
+        drop_na(entrez_gene_id) %>%
+        # Remap obsolete entrez_ids
+        # 645840 -> 114112
+        # 348738 -> 6241
+        mutate(entrez_gene_id = recode(as.integer(entrez_gene_id), `645840` = 114112L, `348738` = 6241L))
     )
   )
 

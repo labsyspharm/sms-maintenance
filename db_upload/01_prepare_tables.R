@@ -4,7 +4,7 @@ library(synapser)
 library(synExtra)
 
 synLogin()
-syn <- synDownloader(here("tempdl"))
+syn <- synDownloader(here("tempdl"), ifcollision = "overwrite.local")
 
 # set directories, import files ------------------------------------------------
 ###############################################################################T
@@ -90,7 +90,7 @@ tables_formatted <- tables_dl %>%
 # write csv files --------------------------------------------------------------
 ###############################################################################T
 
-dirs_tables <- tables$data[[1]]$fp_name %>%
+dirs_tables <- tables_formatted$data[[1]]$fp_name %>%
   unique() %>%
   {file.path(dir_release, .)}
 dirs_tables %>%
@@ -172,6 +172,7 @@ target_table <- target_dict %>%
 target_mapping <- target_dict %>%
   drop_na(entrez_gene_id) %>%
   distinct(gene_id = entrez_gene_id, chembl_id, target_type, uniprot_id, pref_name) %>%
+  filter(!pmap_lgl(list(chembl_id, target_type, uniprot_id, pref_name), ~map_lgl(.x, is.na) %>% all())) %>%
   arrange(gene_id)
 
 write_csv(target_table, file.path(dir_release, "lsp_target_dictionary.csv.gz"))

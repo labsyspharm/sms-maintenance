@@ -186,14 +186,25 @@ gene_info <- vroom(
   skip = 1
 )
 
+# 645840 -> 114112
+# 348738 -> 6241
+
 map_chemblID_geneID <- chembl_map_with_entrez %>%
   # Have to cast as integer64 because the Chembl postgresql DB stores some ids
   # (tid, tax_id) as 64bit integer
+  mutate_at(vars(tax_id, tid), as.integer) %>%
   left_join(
-    mutate_at(gene_info, "tax_id", bit64::as.integer64),
+    gene_info,
     by = c("tax_id", "entrez_gene_id")
   ) %>%
+  # Append all human gene's not already in to cover genes that are not covered
+  # in chembl but only in the LSP single doses etc
+  bind_rows(
+    filter(gene_info, !entrez_gene_id %in% .$entrez_gene_id, tax_id == 9606L) %>%
+      mutate(organism = "Homo sapiens")
+  ) %>%
   distinct()
+
 
 write_csv(map_chemblID_geneID, file.path(dir_release, "target_dictionary_wide.csv.gz"))
 
@@ -219,3 +230,4 @@ list(
       File(parent = syn_id_mapping) %>%
       synStore(activity = target_wrangling_activity)
   )
+

@@ -9,6 +9,16 @@ CREATE TYPE "compound_sources" AS ENUM (
   'vendor'
 );
 
+CREATE TYPE "target_types" AS ENUM (
+  'SINGLE PROTEIN',
+  'CHIMERIC PROTEIN',
+  'PROTEIN FAMILY',
+  'SELECTIVITY GROUP',
+  'PROTEIN COMPLEX GROUP',
+  'PROTEIN COMPLEX',
+  'PROTEIN NUCLEIC-ACID COMPLEX'
+);
+
 CREATE TYPE "biochem_value_types" AS ENUM (
   'IC50',
   'Ki',
@@ -103,7 +113,8 @@ CREATE TABLE "lsp_target_mapping" (
   "gene_id" int,
   "pref_name" varchar,
   "chembl_id" varchar,
-  "uniprot_id" varchar
+  "uniprot_id" varchar,
+  "target_type" target_types
 );
 
 CREATE TABLE "lsp_biochem" (
@@ -123,9 +134,10 @@ CREATE TABLE "lsp_phenotypic_chembl" (
   "lspci_id" int,
   "assay_id" int,
   "value" float,
-  "value_type" biochem_value_types,
+  "value_type" varchar,
   "value_unit" biochem_value_units,
   "value_relation" biochem_value_relations,
+  "description_assay" varchar,
   "reference_id" varchar,
   "reference_type" reference_types,
   "url" varchar
@@ -353,6 +365,8 @@ COMMENT ON COLUMN "lsp_target_mapping"."chembl_id" IS 'ChEMBL target ID';
 
 COMMENT ON COLUMN "lsp_target_mapping"."uniprot_id" IS 'UniProt ID';
 
+COMMENT ON COLUMN "lsp_target_mapping"."target_type" IS 'The type of the original target before translation to Entrez IDs';
+
 COMMENT ON TABLE "lsp_biochem" IS 'Table of biochemical affinity measurements.';
 
 COMMENT ON COLUMN "lsp_biochem"."lspci_id" IS 'Foreign key for compound ID';
@@ -388,6 +402,8 @@ COMMENT ON COLUMN "lsp_phenotypic_chembl"."value_type" IS 'The type of measureme
 COMMENT ON COLUMN "lsp_phenotypic_chembl"."value_unit" IS 'The unit of the measurement.';
 
 COMMENT ON COLUMN "lsp_phenotypic_chembl"."value_relation" IS 'Some assays can't determine the measured value precisely. This column gives relationship between the actual and the measured value.';
+
+COMMENT ON COLUMN "lsp_phenotypic_chembl"."description_assay" IS 'Description of the assay.';
 
 COMMENT ON COLUMN "lsp_phenotypic_chembl"."reference_id" IS 'The reference for the measurement.';
 

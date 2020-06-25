@@ -56,6 +56,17 @@ write_csv(
   file.path(dir_release, "indra_name_map.csv.gz")
 )
 
+hmsl_raw <- syn("syn20692443") %>%
+  read_rds()
+
+hmsl_table <- hmsl_raw %>%
+  mutate_at(vars(alternate_names), map_chr, paste, collapse = "|")
+
+write_csv(
+  hmsl_table,
+  file.path(dir_release, "indra_hmsl_table.csv.gz")
+)
+
 # Store to synapse -------------------------------------------------------------
 ###############################################################################T
 
@@ -64,7 +75,8 @@ export_tas_indra <- Activity(
   used = c(
     "syn22035396",
     "syn21664452",
-    "syn20830516"
+    "syn20830516",
+    "syn20692443"
   ),
   executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/db_upload/02_indra_export.R"
 )
@@ -76,7 +88,8 @@ syn_export <- Folder("export", parent = syn_release) %>%
 c(
   file.path(dir_release, "indra_tas.csv.gz"),
   file.path(dir_release, "indra_id_map.csv.gz"),
-  file.path(dir_release, "indra_name_map.csv.gz")
+  file.path(dir_release, "indra_name_map.csv.gz"),
+  file.path(dir_release, "indra_hmsl_table.csv.gz")
 ) %>%
   synStoreMany(parentId = syn_export, activity = export_tas_indra)
 
