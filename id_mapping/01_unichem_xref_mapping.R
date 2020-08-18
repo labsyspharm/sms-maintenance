@@ -4,12 +4,10 @@ library(synapser)
 library(synExtra)
 library(vroom)
 
-source(here("id_mapping", "chemoinformatics_funcs.R"))
-
 synLogin()
 syn <- synDownloader(here("tempdl"))
 
-release <- "chembl_v25"
+release <- "chembl_v27"
 dir_release <- here(release)
 syn_release <- synFindEntityId(release, "syn18457321")
 
@@ -20,7 +18,7 @@ dir.create(dir_unichem, showWarnings = FALSE)
 # Download Unichem xref tables -------------------------------------------------
 ###############################################################################T
 
-unichem_ftp <- "ftp://ftp.ebi.ac.uk/pub/databases/chembl/UniChem/data/oracleDumps/UDRI257/"
+unichem_ftp <- "ftp://ftp.ebi.ac.uk/pub/databases/chembl/UniChem/data/oracleDumps/UDRI288/"
 
 download.file(
   file.path(unichem_ftp, "UC_SOURCE.txt.gz"),
@@ -52,9 +50,6 @@ uci_xref <- vroom(
   col_types = "_ic______i"
 )
 
-uci_xref_selected <- uci_xref %>%
-  filter(src_id %in% c(1L, 3L, 4L, 7L, 9L, 10L, 14L, 20L, 22L))
-
 unichem_sources <- read_tsv(
   file.path(dir_unichem, "unichem_sources.txt.gz"),
   col_names = c("src_id", "src_name", "date_created", "base_url"),
@@ -65,6 +60,18 @@ unichem_sources <- read_tsv(
   # ) %>%
   mutate(xref_type = paste0(src_name, "_id_compound"))
 
+wanted_source_ids <- unichem_sources %>%
+  filter(
+    src_name %in% c(
+      "chembl", "drugbank", "chebi", "zinc", "emolecules", "surechembl",
+      "selleck", "pubchem", "lincs", "molport", "bindingdb", "drugcentral",
+      "clinicaltrials"
+    )
+  ) %>%
+  pull(src_id)
+
+uci_xref_selected <- uci_xref %>%
+  filter(src_id %in% wanted_source_ids)
 
 uci_xref_nested <- uci_xref_selected %>%
   group_nest(src_id) %>%
@@ -81,7 +88,7 @@ uci_chembl_mappings <- uci_xref_nested %>%
     data = map2(
       data, src_name,
       ~.x %>%
-        magrittr::set_colnames(recode(colnames(.), src_compound_id = paste0(.y, "_id"))) %>%
+        rename(external_id = src_compound_id) %>%
         inner_join(
           chembl_uci,
           by = "uci"
@@ -135,13 +142,11 @@ pwalk(
 
 unichem_wrangling_activity <- Activity(
   name = "Wrangle Unichem cross-references",
-  used = "ftp://ftp.ebi.ac.uk/pub/databases/chembl/UniChem/data/oracleDumps/UDRI257/",
+  used = unichem_ftp,
   executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/id_mapping/01_unichem_xref_mapping.R"
 )
 
-syn_unichem <- Folder("unichem", parent = "syn20830877") %>%
-  synStore() %>%
-  chuck("properties", "id")
+syn_unichem <- synMkdir(syn_release, "unichem")
 
 c(
   Sys.glob(file.path(dir_unichem, "chembl_*_mapping.csv.gz")),
