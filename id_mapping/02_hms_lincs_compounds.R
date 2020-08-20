@@ -10,7 +10,7 @@ library(lspcheminf)
 synLogin()
 syn <- synDownloader(here("tempdl"))
 
-release <- "chembl_v25"
+release <- "chembl_v27"
 dir_release <- here(release)
 syn_release <- synFindEntityId(release, "syn18457321")
 
@@ -74,45 +74,6 @@ write_rds(
 )
 rt_df_inchi <- read_rds(file.path(dir_release, "hmsl_compounds_raw.rds"))
 
-# Canonicalize LINCS compounds -------------------------------------------------
-###############################################################################T
-
-# Disregard the annotated Chembl ID in the HMS LINCS database because it may
-# point to the salt compound and we always want the free base ID
-# Only use annotated LINCS Chembl ID if we can't find it using the inchi_key
-
-# We have to first generate the canonical tautomer for each compound
-plan(multisession(workers = 4))
-hms_lincs_compounds_canonical_inchis <- rt_df_inchi %>%
-  drop_na(inchi) %>%
-  select(hms_id, inchi) %>%
-  chunk_df(12) %>%
-  future_map(
-    ~canonicalize_compound(set_names(.x$inchi, .x$hms_id)),
-    .progress = TRUE
-  )
-
-hms_lincs_compounds_canonical_inchis_df <- hms_lincs_compounds_canonical_inchis %>%
-  bind_rows() %>%
-  distinct(hms_id = compound, inchi)
-
-hms_lincs_compounds_canonical <- rt_df_inchi %>%
-  select(hms_id, original_inchi = inchi) %>%
-  left_join(
-    hms_lincs_compounds_canonical_inchis_df,
-    by = "hms_id"
-  ) %>%
-  mutate(
-    # Whe canonicalization failed, use original inchi
-    inchi = if_else(!is.na(inchi), inchi, original_inchi)
-  )
-
-write_csv(
-  hms_lincs_compounds_canonical,
-  file.path(dir_release, "hmsl_compounds_canonical.csv.gz")
-)
-hms_lincs_compounds_canonical <- read_csv(file.path(dir_release, "hmsl_compounds_canonical.csv.gz"))
-
 # Store to synapse -------------------------------------------------------------
 ###############################################################################T
 
@@ -124,9 +85,4 @@ fetch_hmsl_activity <- Activity(
 c(
   file.path(dir_release, "hmsl_compounds_raw.rds")
 ) %>%
-  synStoreMany(parent = "syn21064123", activity = fetch_hmsl_activity)
-
-c(
-  file.path(dir_release, "hmsl_compounds_canonical.csv.gz")
-) %>%
-  synStoreMany(parent = "syn21093671", activity = fetch_hmsl_activity)
+  synStoreMany(parent = synMkdir(syn_release, "raw_data"), activity = fetch_hmsl_activity)

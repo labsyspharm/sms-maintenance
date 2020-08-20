@@ -73,6 +73,8 @@ write_rds(
 
 # all_cmpds <- read_rds(file.path(dir_release, "chembl_compounds_raw.rds"))
 
+#
+
 # Store to synapse -------------------------------------------------------------
 ###############################################################################T
 

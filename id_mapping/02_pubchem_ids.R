@@ -13,19 +13,24 @@ syn <- synDownloader(here("tempdl"))
 
 # Set directories, import files ------------------------------------------------
 ###############################################################################T
-release <- "chembl_v25"
+release <- "chembl_v27"
 dir_release <- here(release)
 syn_release <- synFindEntityId(release, "syn18457321")
 
-chembl_pubchem_mapping <- syn("syn21572661") %>%
-  read_csv()
+inputs <- c(
+  chembl_pubchem_mapping = synPluck(syn_release, "id_mapping", "unichem", "chembl_pubchem_mapping.csv.gz"),
+  pubchem_synonyms = "ftp://ftp.ncbi.nlm.nih.gov/pubchem/Compound/Monthly/2020-08-01/Extras/CID-Synonym-filtered.gz"
+)
 
+chembl_pubchem_mapping <- inputs[["chembl_pubchem_mapping"]] %>%
+  syn() %>%
+  read_csv()
 
 # Fetch compound synonyms from Pubchem -----------------------------------------
 ###############################################################################T
 
 download.file(
-  "ftp://ftp.ncbi.nlm.nih.gov/pubchem/Compound/Monthly/2020-02-01/Extras/CID-Synonym-filtered.gz",
+  inputs[["pubchem_synonyms"]],
   file.path(dir_release, "pubchem_synonyms.csv.gz")
 )
 
@@ -38,8 +43,8 @@ pubchem_synonyms_raw <- vroom(
 pubchem_synonyms_chembl <- pubchem_synonyms_raw %>%
   inner_join(
     chembl_pubchem_mapping %>%
-      distinct(pubchem_id, chembl_id),
-    by = "pubchem_id"
+      distinct(external_id, chembl_id),
+    by = c("pubchem_id" = "external_id")
   )
 
 write_csv(
@@ -52,16 +57,11 @@ write_csv(
 
 wrangle_activity <- Activity(
   name = "Wrangle compound names and synonyms from Pubchem",
-  used = c(
-    "syn21572661",
-    "ftp://ftp.ncbi.nlm.nih.gov/pubchem/Compound/Monthly/2020-02-01/Extras/CID-Synonym-filtered.gz"
-  ),
+  used = unname(inputs),
   executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/id_mapping/02_pubchem_ids.R"
 )
 
-syn_pubchem <- Folder("pubchem", parent = "syn20830877") %>%
-  synStore() %>%
-  chuck("properties", "id")
+syn_pubchem <- synMkdir(syn_release, "id_mapping", "pubchem")
 
 c(
   file.path(dir_release, "pubchem_synonyms_chembl.csv.gz")

@@ -146,7 +146,7 @@ unichem_wrangling_activity <- Activity(
   executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/id_mapping/01_unichem_xref_mapping.R"
 )
 
-syn_unichem <- synMkdir(syn_release, "unichem")
+syn_unichem <- synMkdir(syn_release, "id_mapping", "unichem")
 
 c(
   Sys.glob(file.path(dir_unichem, "chembl_*_mapping.csv.gz")),
