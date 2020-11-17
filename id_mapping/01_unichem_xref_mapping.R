@@ -18,7 +18,7 @@ dir.create(dir_unichem, showWarnings = FALSE)
 # Download Unichem xref tables -------------------------------------------------
 ###############################################################################T
 
-unichem_ftp <- "ftp://ftp.ebi.ac.uk/pub/databases/chembl/UniChem/data/oracleDumps/UDRI288/"
+unichem_ftp <- "ftp://ftp.ebi.ac.uk/pub/databases/chembl/UniChem/data/oracleDumps/UDRI321/"
 
 download.file(
   file.path(unichem_ftp, "UC_SOURCE.txt.gz"),
