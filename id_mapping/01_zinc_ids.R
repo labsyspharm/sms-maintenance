@@ -15,14 +15,16 @@ syn <- synDownloader(here("tempdl"))
 
 # Set directories, import files ------------------------------------------------
 ###############################################################################T
-release <- "chembl_v25"
+release <- "chembl_v27"
 dir_release <- here(release)
 syn_release <- synFindEntityId(release, "syn18457321")
 
-chembl_zinc_mapping <- syn("syn21572663") %>%
+chembl_zinc_mapping <- synPluck(syn_release, "id_mapping", "unichem", "chembl_zinc_mapping.csv.gz") %>%
+  syn() %>%
   read_csv()
 
-zinc_catalogs <- syn("syn21994981") %>%
+zinc_catalogs <- synPluck(syn_release, "id_mapping", "zinc", "zinc_catalogs.csv") %>%
+  syn() %>%
   read_csv()
 
 dir_vendor <- file.path(dir_release, "vendor")
@@ -31,8 +33,7 @@ dir.create(dir_vendor, showWarnings = FALSE)
 # Fetch vendor info from ZINC --------------------------------------------------
 ###############################################################################T
 
-# Get catalog URLS
-
+# Get catalog URLs
 catalog_urls <- tribble(
   ~class_id, ~class,
   "50", "in_stock",
@@ -56,88 +57,175 @@ catalog_urls <- tribble(
         ) %>%
         filter(Size == "-", Name != "", `Last modified` != "") %>%
         pull(Name)
-        # rvest::html_nodes("td[valign='top'] + td a") %>%
-        # magrittr::extract(-1) %>%
-        # rvest::html_text(trim = TRUE) %>%
-        # str_replace("/$", "")
+      # rvest::html_nodes("td[valign='top'] + td a") %>%
+      # magrittr::extract(-1) %>%
+      # rvest::html_text(trim = TRUE) %>%
+      # str_replace("/$", "")
     )
   ) %>%
   unchop(vendor)
 
+catalog_files <- catalog_urls %>%
+  crossing(
+    tribble(
+      ~type, ~url_template,
+      "info", "https://files.docking.org/catalogs/{class_id}/{vendor}/{vendor}.info.txt",
+      "source", "https://files.docking.org/catalogs/source/{vendor}.src.txt"
+    )
+  ) %>%
+  group_by(type) %>%
+  mutate(
+    url = glue::glue_data(cur_data(), url_template[[1]])
+  ) %>%
+  ungroup()
+
 # Download vendor libraries
 
-pwalk(
-  catalog_urls,
-  function(vendor, class_id, ...) {
-    message(vendor)
-    path <- file.path(dir_vendor, paste0("info_", vendor, ".txt"))
-    remote_path <- paste0("http://files.docking.org/catalogs/", class_id ,"/", vendor, "/", vendor, ".info.txt")
-    for (ext in c(".gz", "")) {
-      p <- paste0(path, ext)
-      if (file.exists(p) && file.size(p) > 5)
-        break
-      rp <- paste0(remote_path, ext)
-      res <- try(
-        download.file(rp, p)
-      )
-      if (class(res) != "try-error")
-        break
-    }
+download_zinc <- function(vendor, url, type, ...) {
+  message(vendor)
+  path <- file.path(dir_vendor, paste0(type, "_", vendor, ".txt"))
+  remote_path <- url
+  for (ext in c(".gz", "")) {
+    p <- paste0(path, ext)
+    if (file.exists(p) && file.size(p) > 5)
+      return(p)
+    rp <- paste0(remote_path, ext)
+    res <- try(
+      download.file(rp, p),
+      silent = TRUE
+    )
+    if (class(res) != "try-error")
+      return(p)
   }
+  return(NA_character_)
+}
+
+catalog_files <- catalog_files %>%
+  mutate(
+    path = pmap_chr(
+      .,
+      download_zinc
+    )
+  )
+
+
+# Manually downloading some files that don't correspond to pattern
+manual_files <- tribble(
+  ~vendor, ~type, ~url,
+  "cdive", "source", "https://files.docking.org/catalogs/source/cdiv.src.txt"
 )
 
-# Manually downloading http://files.docking.org/catalogs/10/enaminebb-v/enaminebb-v.0.info.txt.gz
-# it doesn't correspond to the pattern
-if (!file.exists(file.path(dir_vendor, "info_enaminebb-v.txt.gz")))
-  download.file("http://files.docking.org/catalogs/10/enaminebb-v/enaminebb-v.0.info.txt.gz", file.path(dir_vendor, "info_enaminebb-v.txt.gz"))
+
+catalog_files <- catalog_files %>%
+  setDT() %>%
+  {
+    .[
+      manual_files %>%
+        mutate(
+          path = pmap_chr(
+            .,
+            download_zinc
+          )
+        ) %>%
+        setDT(),
+      on = c("vendor", "type"),
+      c("url", "path") := list(i.url, i.path)
+    ]
+  } %>%
+  setDF()
+
 
 # Remove "cdive" "cdivp", doesn't contain any
 
-vendor_libraries <- catalog_urls %>%
-  filter(!vendor %in% c("cdive", "cdivp", "msnp")) %>%
-  select(vendor, class) %>%
+vendor_libraries <- catalog_files %>%
+  filter(type == "info") %>%
+  drop_na(path) %>%
   mutate(
-    data = map(
-      vendor,
-      function(vendor) {
+    data = pmap(
+      .,
+      function(vendor, path, ...) {
         message(vendor)
-        f <- Sys.glob(
-          file.path(dir_vendor, paste0("info_", vendor, ".txt*"))
-        )
-        message(f)
-        fread(
-          f,
-          header = FALSE,
-          colClasses = rep_len("character", 5),
-          col.names = c("vendor_id", "zinc_id", "inchi_key", "tranche", "notes")
+        tryCatch(
+          fread(
+            path,
+            header = FALSE,
+            colClasses = rep_len("character", 5),
+            col.names = c("vendor_id", "zinc_id", "inchi_key", "tranche", "notes")
+          ),
+          error = function(e) NULL
         )
       }
     )
   )
 
-vendor_tables <- vendor_libraries %>%
-  unnest(data) %>%
-  setDT()
+vendor_smiles <- catalog_files %>%
+  filter(type == "source") %>%
+  drop_na(path) %>%
+  mutate(
+    data = pmap(
+      .,
+      function(vendor, path, ...) {
+        message(vendor)
+        tryCatch(
+          fread(
+            path,
+            header = FALSE,
+            colClasses = rep_len("character", 2),
+            col.names = c("smiles", "vendor_id")
+          ),
+          error = function(e) NULL
+        )
+      }
+    )
+  )
 
-# Mapping from Zinc IDs to Chembl provided by Zinc directly
-download.file("http://files.docking.org/catalogs/1/chembl23/chembl23.codemap.txt.gz", file.path(dir_vendor, "codemap_chembl23.txt.gz"))
-chembl_codemap <- read_delim(file.path(dir_vendor, "codemap_chembl23.txt.gz"), delim = " ", col_names = c("zinc_id", "chembl_id"), col_types = "cc")
+vendor_libraries_all <- vendor_libraries %>%
+  select(-url_template, -url, -path) %>%
+  unnest(data)
 
-zinc_mapping <- chembl_zinc_mapping %>%
-  select(-uci) %>%
-  bind_rows(chembl_codemap) %>%
-  distinct() %>%
-  setDT()
 
-vendor_tables_chembl <- vendor_tables[
-  zinc_mapping, on = "zinc_id", nomatch = NULL
-]
+vendor_smiles_all <- vendor_smiles %>%
+  select(vendor, data) %>%
+  unnest(data)
 
-fwrite(
-  vendor_tables_chembl,
-  file.path(dir_vendor, "zinc_commercial_compounds.csv.gz"),
-  na = "NA"
+vendor_smiles_zinc <- vendor_smiles_all %>%
+  inner_join(
+    vendor_libraries_all %>%
+      select(vendor, vendor_id, zinc_id),
+    by = c("vendor", "vendor_id")
+  )
+
+write_csv(
+  file.path(dir_vendor, "zinc_smiles.csv.gz"),
+  vendor_smiles_all
 )
+
+write_csv(
+  file.path(dir_vendor, "zinc_compounds")
+)
+
+#
+# # Mapping from Zinc IDs to Chembl provided by Zinc directly
+# download.file("http://files.docking.org/catalogs/1/chembl23/chembl23.codemap.txt.gz", file.path(dir_vendor, "codemap_chembl23.txt.gz"))
+# chembl_codemap <- read_delim(file.path(dir_vendor, "codemap_chembl23.txt.gz"), delim = " ", col_names = c("zinc_id", "chembl_id"), col_types = "cc")
+#
+# zinc_mapping <- chembl_zinc_mapping %>%
+#   select(-uci) %>%
+#   bind_rows(chembl_codemap) %>%
+#   distinct() %>%
+#   setDT()
+#
+# vendor_tables_chembl <- vendor_tables[
+#   zinc_mapping, on = "zinc_id", nomatch = NULL
+# ]
+#
+# fwrite(
+#   vendor_tables_chembl,
+#   file.path(dir_vendor, "zinc_commercial_compounds.csv.gz"),
+#   na = "NA"
+# )
+#
+# vendor_tables_chembl <- read_csv()
 
 # Get compound names from vendors ----------------------------------------------
 ###############################################################################T
