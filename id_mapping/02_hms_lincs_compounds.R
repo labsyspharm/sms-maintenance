@@ -61,7 +61,7 @@ rt_df_inchi <- rt_df %>%
       # Only convert if inchi is unknown and smiles is known
       # otherwise use known inchi
       ~if (is.na(.x) && !is.na(.y))
-        convert_compound_identifier(.y, identifier = "smiles", target_identifier = "inchi")[["compounds"]]
+        convert_compound_descriptor(compounds(.y, descriptor = "smiles"), target_descriptor = "inchi")[["compounds"]]
       else .x
     )
   ) %>%
@@ -72,7 +72,7 @@ write_rds(
   rt_df_inchi,
   file.path(dir_release, "hmsl_compounds_raw.rds")
 )
-rt_df_inchi <- read_rds(file.path(dir_release, "hmsl_compounds_raw.rds"))
+# rt_df_inchi <- read_rds(file.path(dir_release, "hmsl_compounds_raw.rds"))
 
 # Store to synapse -------------------------------------------------------------
 ###############################################################################T
