@@ -1,71 +1,36 @@
 library(tidyverse)
-library(furrr)
 library(data.table)
 library(here)
 library(synapser)
 library(synExtra)
 library(lspcheminf)
+library(batchtools)
+library(processx)
+library(data.table)
 
 synLogin()
 syn <- synDownloader(here("tempdl"))
 
-release <- "chembl_v25"
+release <- "chembl_v27"
 dir_release <- here(release)
 syn_release <- synFindEntityId(release, "syn18457321")
 
+inputs <- c(
+  inchis = synPluck(syn_release, "id_mapping", "canonical_inchis_raw.csv.gz")
+)
 
 # Load compound data -----------------------------------------------------------
 ###############################################################################T
 
-compound_sources <- tribble(
-  ~source, ~canonical, ~raw,
-  "chembl", "syn20692439", "syn20692440",
-  "hmsl", "syn20692442", "syn20692443"
-)
-
-compounds <- compound_sources %>%
-  mutate_at(
-    vars(-source),
-    map,
-    function(s) {
-      f <- syn(s)
-      {
-        if (str_ends(f, "gz"))
-          read_csv(f, col_types = "ccc")
-        else
-          read_rds(f)
-      } %>%
-        rename_all(
-          str_replace,
-          fixed(if ("hms_id" %in% names(.)) "hms_id" else "chembl_id"),
-          "id"
-        ) %>%
-        rename_all(
-          str_replace,
-          fixed("standard_inchi"),
-          "inchi"
-        )
-    }
-  )
+compounds <- inputs[["inchis"]] %>%
+  syn() %>%
+  read_csv()
 
 compounds_all <- compounds %>%
-  transmute(
-    source,
-    data = map2(
-      canonical, raw,
-      ~.y %>%
-        select(id, raw_inchi = inchi) %>%
-        left_join(
-          select(.x, id, canonical_inchi = inchi),
-          by = "id"
-        )
-    )
-  ) %>%
-  unnest(data) %>%
   # Compute chemical formula
   drop_na(raw_inchi) %>%
   mutate(
-    formula = raw_inchi %>%
+    formula = canonical_inchi %>%
       str_split_fixed(fixed("/"), 3) %>%
       {.[, 2]},
     formula_vector = formula %>%
@@ -96,6 +61,65 @@ write_rds(
 # Create molecular fingerprints ------------------------------------------------
 ###############################################################################T
 
+fingerprinting_fun <- function(compound_file, output_file, fingerprint_type, fingerprint_args, port = 8000) {
+  library(processx)
+  library(tidyverse)
+  library(lspcheminf)
+
+  lspcheminf_script <- paste0(
+    "unset PYTHONPATH
+    unset PYTHONHOME
+    source ~/miniconda3/etc/profile.d/conda.sh
+    conda activate lspcheminf_env
+    gunicorn --workers=1 -b 127.0.0.1:", port, " -t 60000 lspcheminf"
+  )
+
+  lspcheminf_p <- process$new(
+    "bash", c("-c", lspcheminf_script), stderr = "|", stdout = "|"
+  )
+
+  Sys.sleep(5)
+
+  message("lspcheminf launch output", lspcheminf_p$read_error_lines(), lspcheminf_p$read_output_lines())
+
+  fingerprint_df <- tryCatch(
+    {
+      compound_df <- read_csv(compound_file)
+      safely(calculate_fingerprints)(
+        with(
+          compound_df,
+          set_names(compound, id)
+        ),
+        fingerprint_type = fingerprint_type,
+        fingerprint_args = fingerprint_args,
+        url = paste0("http://127.0.0.1:", port)
+      )
+    },
+    finally = {
+      message("Cleaning up")
+      lspcheminf_p$kill_tree()
+    }
+  )
+
+  message("lspcheminf fingerprinting output", fingerprint_df[["error"]])
+
+  if (!is.null(fingerprint_df[["result"]]))
+    write_csv(
+      fingerprint_df[["result"]],
+      output_file
+    )
+  else
+    stop("Unsuccesful")
+}
+
+wd <- file.path("/n", "scratch3", "users", "c", "ch305", "fingerprints")
+dir.create(wd, showWarnings = FALSE)
+
+reg <- makeRegistry(
+  file.dir = file.path(wd, paste0("registry_fingerprints_", gsub(" ", "_", Sys.time()))),
+  seed = 1
+)
+
 fingerprinting_args <- tribble(
   ~fp_name, ~fp_type, ~fp_args,
   "morgan_chiral", "morgan", list(useChirality = TRUE),
@@ -103,63 +127,111 @@ fingerprinting_args <- tribble(
   "topological_normal", "topological", NULL
 )
 
-plan(multicore, workers = 10)
-cmpd_fingerprints <- compounds_selected %>%
-  distinct(name = id, compound = inchi) %>%
+cmpd_ids <- compounds_selected %>%
+  distinct(compound = inchi) %>%
   # Some HMSL compounds don't report inchi or smiles or anything, should have removed
   # them earlier, removing them here now
   drop_na() %>%
+  mutate(id = seq_len(n()))
+
+cmpd_chunks <- cmpd_ids %>%
   # slice(1:100) %>%
-  chunk_df(30) %>%
+  chunk_df(300, seed = 1) %>%
   enframe("index", "compounds") %>%
-  mutate(compounds = map(compounds, ~set_names(.x[["compound"]], .x[["name"]]))) %>%
+  mutate(
+    compound_file = file.path(wd, paste0("compounds_", index, ".csv"))
+  )
+
+pwalk(
+  cmpd_chunks,
+  function(compounds, compound_file, ...)
+    write_csv(compounds, compound_file)
+)
+
+cmpd_fingerprint_input <- cmpd_chunks %>%
+  select(index, compound_file) %>%
   crossing(fingerprinting_args) %>%
   mutate(
-    fp_res = future_pmap(
-      select(., compounds, fp_type, fp_args),
-      ~safely(calculate_fingerprints)(..1, fingerprint_type = ..2, fingerprint_args = ..3),
-      .progress = TRUE
-    )
+    index_out = seq_len(n()),
+    port = 9000 + index_out,
+    output_file = file.path(wd, paste0("compound_fingerprints_", index_out, ".csv"))
   )
 
 write_rds(
-  cmpd_fingerprints %>% select(-compounds),
-  file.path(dir_release, "all_compounds_fingerprints_raw.rds"),
-  compress = "gz"
+  cmpd_fingerprint_input,
+  file.path(wd, "cmpd_fingerprint_input.rds")
 )
-# cmpd_fingerprints <- read_rds(file.path(dir_release, "all_compounds_fingerprints_raw.rds"))
 
-# Check if any errors occured
-map(cmpd_fingerprints[["fp_res"]], "error") %>% map_lgl(is.null) %>% all()
-# TRUE
-# None occured
+batchMap(
+  fun = fingerprinting_fun,
+  compound_file = cmpd_fingerprint_input[["compound_file"]],
+  output_file = cmpd_fingerprint_input[["output_file"]],
+  fingerprint_type = cmpd_fingerprint_input[["fp_type"]],
+  fingerprint_args = cmpd_fingerprint_input[["fp_args"]],
+  port = cmpd_fingerprint_input[["port"]]
+)
 
-cmpd_fingerprints_all <- cmpd_fingerprints %>%
-  transmute(
-    fp_name,
-    fp_type,
-    fp_res = map(fp_res, "result")
+
+# with(
+#   cmpd_fingerprint_input,
+#   fingerprinting_fun(
+#     compound_file[[1]],
+#     fp_type[[1]],
+#     fp_args[[1]],
+#     port[[1]]
+#   )
+# )
+
+job_table <- findJobs() %>%
+  # Chunk jobs into a single array job
+  mutate(chunk = 1)
+
+submitJobs(
+  job_table[findExpired()],
+  resources = list(
+    memory = "2gb",
+    ncpus = 1L,
+    partition = "short",
+    walltime = 5*60,
+    chunks.as.arrayjobs = TRUE,
+    # For some reason these nodes fail to execute R because of an "illegal instruction"
+    exclude = "compute-f-17-[09-25]"
+  )
+)
+
+waitForJobs()
+
+
+cmpd_fingerprints_chunks <- cmpd_fingerprint_input %>%
+  select(
+    starts_with("fp_"), output_file
   ) %>%
-  unnest(fp_res) %>%
-  rename(id = names, fingerprint = fingerprints) %>%
-  group_nest(fp_name, fp_type)
-
-
-skipped_cmpds <- compounds_selected %>%
-  anti_join(
-    cmpd_fingerprints_all %>%
-      unnest(data),
-    by = "id"
+  group_by(
+    across(starts_with("fp_"))
+  ) %>%
+  summarize(
+    data = output_file %>%
+      map(fread, colClasses = c("character", "numeric"), sep = ",", showProgress = FALSE) %>%
+      rbindlist() %>%
+      list(),
+    .groups = "drop"
   )
 
-write_rds(
-  skipped_cmpds,
-  file.path(dir_release, "all_compounds_fingerprints_skipped.rds"),
-  compress = "gz"
-)
+
+setDT(cmpd_ids)
+
+cmpd_fingerprints  <- cmpd_fingerprints_chunks %>%
+  rowwise() %>%
+  mutate(
+    data = data[
+      cmpd_ids, on = c("names" = "id"), nomatch = NULL
+    ] %>%
+      list()
+  ) %>%
+  ungroup()
 
 write_rds(
-  cmpd_fingerprints_all,
+  cmpd_fingerprints,
   file.path(dir_release, "all_compounds_fingerprints.rds"),
   compress = "gz"
 )
@@ -169,12 +241,7 @@ write_rds(
 
 fingerprint_activity <- Activity(
   name = "Calculate molecular fingerprints",
-  used = c(
-    "syn20692439",
-    "syn20692442",
-    "syn20692440",
-    "syn20692443"
-  ),
+  used = unname(inputs),
   executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/id_mapping/03_fingerprints.R"
 )
 
@@ -183,8 +250,6 @@ fp_folder <- Folder("fingerprints", syn_release) %>%
   chuck("properties", "id")
 
 c(
-  file.path(dir_release, "all_compounds_fingerprints.rds"),
-  file.path(dir_release, "all_compounds_canonical.rds"),
-  file.path(dir_release, "all_compounds_fingerprints_skipped.rds")
+  file.path(dir_release, "all_compounds_fingerprints.rds")
 ) %>%
   synStoreMany(parent = fp_folder, activity = fingerprint_activity)
