@@ -1,29 +1,103 @@
 library(tidyverse)
-library(furrr)
 library(here)
 library(synapser)
 library(synExtra)
 library(lspcheminf)
-library(future.apply)
+library(data.table)
 
 synLogin()
 syn <- synDownloader(here("tempdl"))
 
-release <- "chembl_v25"
+release <- "chembl_v27"
 dir_release <- here(release)
 syn_release <- synFindEntityId(release, "syn18457321")
 
 # Loading files ----------------------------------------------------------------
 ###############################################################################T
 
-all_compounds_fingerprints <- syn("syn20692501") %>%
-  read_rds()
+inputs <- c(
+  fingerprints = synPluck(syn_release, "fingerprints", "all_compounds_fingerprints.rds")
+)
 
-compounds_canonical <- syn("syn22080194") %>%
+all_compounds_fingerprints <- inputs[["fingerprints"]] %>%
+  syn() %>%
   read_rds()
 
 # Calculate similarity between all compounds -----------------------------------
 ###############################################################################T
+
+wd <- file.path("/n", "scratch3", "users", "c", "ch305", "simsearch")
+dir.create(wd, showWarnings = FALSE)
+
+# Write FPS files
+pwalk(
+  all_compounds_fingerprints,
+  function(fp_name, data, ...) {
+    fps_path <- file.path(wd, paste0(fp_name, ".fps"))
+    write_lines(
+      c(
+        "#FPS1",
+        "#num_bits=2048"
+      ),
+      fps_path
+    )
+    fwrite(
+      data[, .(fingerprints, names)],
+      file = fps_path,
+      append = TRUE,
+      sep = "\t",
+      col.names = FALSE
+    )
+  }
+)
+
+similarity_fun <- function(input_file, output_file, threshold = 0.9999) {
+  library(processx)
+  library(tidyverse)
+  library(lspcheminf)
+
+  lspcheminf_script <- paste0(
+    "unset PYTHONPATH
+    unset PYTHONHOME
+    source ~/miniconda3/etc/profile.d/conda.sh
+    conda activate lspcheminf_env
+    export OMP_NUM_THREADS=12
+    simsearch --memory --NxN -t ", threshold, " -o ", output_file, " ", input_file
+  )
+
+  p <- process$new(
+    "bash", c("-c", lspcheminf_script), stderr = "|", stdout = "|"
+  )
+
+  on.exit({
+    message("simsearch output ", p$read_error_lines(), p$read_output_lines())
+    p$kill()
+  })
+
+  p$wait()
+
+  if (file.size(output_file) < 1000)
+    stop("Unsuccesful")
+}
+
+# similarity_search_input <- all_compounds_fingerprints %>%
+  # transmute(
+  #   fp_name, fp_type, fp_args,
+  #   input_file = file.path(wd, paste0(fp_name, ".fps")),
+  #   output_file = file.path(wd, paste0(fp_name, ".txt"))
+  # )
+similarity_search_input <- tibble(fp_name = c("morgan_normal", "morgan_chiral", "topological_normal")) %>%
+  mutate(
+    input_file = file.path(wd, paste0(fp_name, ".fps")),
+    output_file = file.path(wd, paste0(fp_name, ".txt"))
+  )
+
+pwalk(
+  similarity_search_input,
+  function(input_file, output_file, ...) {
+    similarity_fun(input_file, output_file, threshold = 0.9999)
+  }
+)
 
 plan(multicore(workers = 3))
 options(future.globals.maxSize = 2*2**30)
