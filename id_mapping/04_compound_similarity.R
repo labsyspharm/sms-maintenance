@@ -51,26 +51,24 @@ pwalk(
   }
 )
 
-similarity_fun <- function(input_file, output_file, threshold = 0.9999) {
+similarity_fun <- function(input_file, output_file) {
   library(processx)
   library(tidyverse)
   library(lspcheminf)
 
   lspcheminf_script <- paste0(
-    "unset PYTHONPATH
-    unset PYTHONHOME
-    source ~/miniconda3/etc/profile.d/conda.sh
-    conda activate lspcheminf_env
-    export OMP_NUM_THREADS=12
-    simsearch --memory --NxN -t ", threshold, " -o ", output_file, " ", input_file
+    # Tail cut off three header lines
+    "tail -n +3 ", input_file, " | sort -k1,1 --parallel=8 -S15G > ", output_file
   )
+
+  message("script run ", lspcheminf_script)
 
   p <- process$new(
     "bash", c("-c", lspcheminf_script), stderr = "|", stdout = "|"
   )
 
   on.exit({
-    message("simsearch output ", p$read_error_lines(), p$read_output_lines())
+    message("sort output ", p$read_error_lines(), p$read_output_lines())
     p$kill()
   })
 
@@ -89,69 +87,68 @@ similarity_fun <- function(input_file, output_file, threshold = 0.9999) {
 similarity_search_input <- tibble(fp_name = c("morgan_normal", "morgan_chiral", "topological_normal")) %>%
   mutate(
     input_file = file.path(wd, paste0(fp_name, ".fps")),
-    output_file = file.path(wd, paste0(fp_name, ".txt"))
+    output_file = file.path(wd, paste0(fp_name, "_sorted.fps"))
   )
 
 pwalk(
   similarity_search_input,
   function(input_file, output_file, ...) {
-    similarity_fun(input_file, output_file, threshold = 0.9999)
+    similarity_fun(input_file, output_file)
   }
 )
 
-plan(multicore(workers = 3))
-options(future.globals.maxSize = 2*2**30)
-similarity_res <- all_compounds_fingerprints %>%
-  mutate(
-    data = data %>%
-      map(
-        ~set_names(.x[["fingerprint"]], .x[["id"]])
-      ) %>%
-      future_lapply(
-        function(fps) {
-          chemical_similarity_threshold(
-            fps,
-            threshold = 0.9999,
-            precalculated = TRUE,
-            n_threads = 6
-          )
-        },
-        future.scheduling = 1,
-        future.packages = "lspcheminf"
-      )
-  )
+# Load similarities ------------------------------------------------------------
+###############################################################################T
 
-# Reorder query and match such that query is always smaller than match
-reorder_matches <- function(df) {
-  df %>%
-    mutate(
-      ordered = map2(
-        query, target,
-        c
-      ) %>%
-        map(sort)
-    ) %>%
-    transmute(
-      query = map_chr(ordered, 1),
-      target = map_chr(ordered, 2),
-      score
+load_similarities <- function(input_file) {
+  # n_compounds <- 20792499L
+  # n_compounds_p <- run(
+  #   "wc", c("-l", input_file)
+  # )
+  # n_componds <- str_split_fixed(n_compounds_p[["stdout"]], fixed(" "), 2)[[1]] %>%
+  #   as.integer()
+  # name_vec <- character(n_compounds)
+  # gruop_vec <-
+  # con = file(input_file, "r")
+  # while (TRUE) {
+  #   line = readLines(con, n = 1)
+  #   if ( length(line) == 0 ) {
+  #     break
+  #   }
+  #   print(line)
+  # }
+  # close(con)
+  sims <- fread(
+    input_file,
+    sep = "\t",
+    header = FALSE,
+    col.names = c("fingerprint", "id")
+  )
+  sims[
+    ,
+    .(
+      identity_group = (fingerprint[-1L] != fingerprint[-length(fingerprint)]) %>%
+        {c(0L, cumsum(.))},
+      id
     )
+  ]
 }
 
-similarity_res_ordered <- similarity_res %>%
+similarity_search_result <- similarity_search_input %>%
   mutate(
     data = map(
-      data,
-      reorder_matches
+      output_file,
+      load_similarities
     )
   )
 
 write_rds(
-  similarity_res_ordered,
+  similarity_search_result %>%
+    select(fp_name, data),
   file.path(dir_release, "all_compounds_similarity.rds"),
   compress = "gz"
 )
-# similarity_res_ordered <- read_rds(file.path(dir_release, "all_compounds_similarity.rds"))
+# similarity_search_result <- read_rds(file.path(dir_release, "all_compounds_similarity.rds"))
 
 
 # Calculate compound mass -----------------------------------
@@ -160,32 +157,74 @@ write_rds(
 # To establish identity between compounds, require that the topological FP
 # matches and one of the Morgan FPs and that their molecular mass is identical
 
-plan(multicore(workers = 18))
-cmpd_mass_raw <- compounds_canonical %>%
-  distinct(inchi) %>%
-  drop_na(inchi) %>%
-  chunk_df(18*3) %>%
-  future_map(
-    ~molecular_mass(
-      set_names(.x[["inchi"]])
-    ),
-    .progress = TRUE
-  ) %>%
-  bind_rows() %>%
-  distinct()
+library(furrr)
+# library(future.apply)
 
-cmpd_mass <- cmpd_mass_raw %>%
-  left_join(
-    compounds_canonical %>%
-      select(source, id, inchi),
-    by = c("compound" = "inchi")
+plan(multicore(workers = 8))
+
+cmpd_mass_input <- all_compounds_fingerprints$data[[1]] %>%
+  select(names, compound) %>%
+  chunk_df(1000, seed = 1) %>%
+  enframe("chunk", "data") %>%
+  chunk_df(50, seed = 1)
+
+cmpd_mass_raw <- cmpd_mass_input %>%
+  # future_map(
+  #   ~molecular_mass(
+  #     set_names(.x[["compound"]], .x[["names"]])
+  #   ),
+  #   .progress = TRUE,
+  #   .options = furrr_options(globals = FALSE, chunk_size = 1L)
+  # ) %>%
+  # map(
+  #   function(df) {
+  #     df %>%
+  #       pull(data) %>%
+  #       future_lapply(
+  #         function(x)
+  #           safely(molecular_mass)(
+  #             set_names(x[["compound"]], x[["names"]])
+  #           ),
+  #         future.globals = FALSE,
+  #         future.packages = c("lspcheminf", "rlang"),
+  #         future.scheduling = TRUE
+  #       )
+  #   }
+  # )
+  map(
+    function(df) {
+      df %>%
+        pull(data) %>%
+        future_map(
+          function(x)
+            safely(molecular_mass)(
+              set_names(x[["compound"]], x[["names"]])
+            ),
+          .progress = TRUE
+        )
+    }
   )
+  # map(
+  #   ~molecular_mass(
+  #     set_names(.x[["compound"]], .x[["names"]])
+  #   )
+  # ) %>%
 
-cmpd_mass_map <- cmpd_mass %>%
-  distinct(source, id, mass)
+cmpd_mass_all <- cmpd_mass_raw %>%
+  unlist(recursive = FALSE)
+
+cmpd_mass_errors <- cmpd_mass_all %>%
+  map("error")
+
+cmpd_mass_errors %>% map_lgl(is.null) %>% all()
+
+
+cmpd_mass <- cmpd_mass_all %>%
+  map("result") %>%
+  bind_rows()
 
 write_csv(
-  cmpd_mass_map,
+  cmpd_mass,
   file.path(dir_release, "compound_masses.csv.gz")
 )
 
