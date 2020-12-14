@@ -16,12 +16,51 @@ syn_release <- synFindEntityId(release, "syn18457321")
 ###############################################################################T
 
 inputs <- c(
-  fingerprints = synPluck(syn_release, "fingerprints", "all_compounds_fingerprints.rds")
+  fingerprints = synPluck(syn_release, "fingerprints", "all_compounds_fingerprints.rds"),
+  old_fingerprints = "syn21614996",
+  old_masses = "syn21572844",
+  old_compounds = "syn20835543"
 )
 
-all_compounds_fingerprints <- inputs[["fingerprints"]] %>%
-  syn() %>%
-  read_rds()
+
+input_data <- inputs %>%
+  map(syn) %>%
+  map(
+    function(x)
+      switch(
+        tools::file_ext(x),
+        `gz` = read_csv,
+        `rds` = read_rds
+      )(x) %>%
+      setDT()
+  )
+
+# Append old fingerprints of previous release ----------------------------------
+###############################################################################T
+
+all_compounds_including_old <- input_data[["fingerprints"]][
+  ,
+  data := map2(
+    data, fp_name,
+    function(data, fp_name) {
+      setDT(data)
+      old_fingerprints <- input_data[["old_fingerprints"]][
+        fingerprint_type == fp_name,
+        .(
+          names = paste0("lspci_id_", lspci_id),
+          fingerprints = fingerprint
+        )
+      ]
+      rbindlist(
+        list(
+          data[, .(names, fingerprints)],
+          old_fingerprints
+        )
+      )
+    }
+  )
+]
+
 
 # Calculate similarity between all compounds -----------------------------------
 ###############################################################################T
@@ -29,9 +68,10 @@ all_compounds_fingerprints <- inputs[["fingerprints"]] %>%
 wd <- file.path("/n", "scratch3", "users", "c", "ch305", "simsearch")
 dir.create(wd, showWarnings = FALSE)
 
+
 # Write FPS files
 pwalk(
-  all_compounds_fingerprints,
+  all_compounds_including_old,
   function(fp_name, data, ...) {
     fps_path <- file.path(wd, paste0(fp_name, ".fps"))
     write_lines(
