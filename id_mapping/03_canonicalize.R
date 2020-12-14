@@ -175,7 +175,7 @@ activity <- Activity(
   executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/id_mapping/03_canonicalize.R"
 )
 
-syn_id_mapping <- Folder("id_mapping", parent = syn_release) %>%
+syn_id_mapping <- Folder("canonicalization", parent = syn_release) %>%
   synStore() %>%
   chuck("properties", "id")
 
