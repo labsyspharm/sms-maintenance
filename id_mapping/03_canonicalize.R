@@ -7,6 +7,9 @@ library(synExtra)
 library(batchtools)
 library(lspcheminf)
 library(sys)
+library(tidyfast)
+library(data.table)
+library(fastSave)
 
 synLogin()
 syn <- synDownloader(here("tempdl"))
@@ -166,6 +169,73 @@ write_csv(
   file.path(dir_release, "canonical_inchis_raw.csv.gz")
 )
 
+# canonical_inchis <- read_csv(file.path(dir_release, "canonical_inchis_raw.csv.gz"))
+
+# Link compound IDs and inchis with temporary ID -------------------------------
+###############################################################################T
+
+
+compounds_all <- canonical_inchis %>%
+  # Compute chemical formula
+  drop_na(raw_inchi) %>%
+  mutate(
+    formula = canonical_inchi %>%
+      str_split_fixed(fixed("/"), 3) %>%
+      {.[, 2]},
+    formula_vector = formula %>%
+      str_match_all("([A-Z][a-z]?)([0-9]*)") %>%
+      map(~set_names(replace_na(as.integer(.x[, 3]), 1L), .x[, 2])),
+    # Only use canonicalized InChI for compounds that are "drug-like" with
+    # at least 3 carbons
+    organic = map_int(formula_vector, ~if ("C" %in% names(.x)) .x[["C"]] else 0L) >= 3,
+    canonical_inchi = if_else(
+      is.na(canonical_inchi) | !organic,
+      raw_inchi,
+      canonical_inchi
+    ),
+    # Assign unique ID to each canonical inchi, makes downstream processing
+    # easier because I don't need to always save the whole inchi
+    inchi_id = match(canonical_inchi, unique(canonical_inchi))
+  )
+
+setDT(compounds_all)
+
+saveRDS.pigz(
+  compounds_all,
+  file.path(dir_release, "all_compounds_canonical.rds"),
+  n.cores = 7
+)
+
+setDTthreads(7)
+
+# Map vendor ID's to canonical Inchi ID
+inchi_vendor_map <- raw_compounds %>%
+  mutate(
+    data = map(data, mutate, across(id, as.character))
+  ) %>%
+  dt_unnest(data) %>%
+  {
+    .[
+      , .(source, vendor_id = id, raw_inchi = inchi)
+    ][
+      compounds_all[, .(inchi_id, raw_inchi)],
+      on = "raw_inchi"
+    ][
+      , .(source, vendor_id, inchi_id)
+    ]
+  }
+
+fwrite(
+  inchi_vendor_map,
+  file.path(dir_release, "inchi_id_vendor_map.csv.gz")
+)
+
+fwrite(
+  compounds_all[, .(canonical_inchi, inchi_id)] %>%
+    distinct(),
+  file.path(dir_release, "canonical_inchi_ids.csv.gz")
+)
+
 # Store to synapse -------------------------------------------------------------
 ###############################################################################T
 
@@ -180,7 +250,10 @@ syn_id_mapping <- Folder("canonicalization", parent = syn_release) %>%
   chuck("properties", "id")
 
 c(
-  file.path(dir_release, "canonical_inchis_raw.csv.gz")
+  file.path(dir_release, "canonical_inchis_raw.csv.gz"),
+  file.path(dir_release, "all_compounds_canonical.rds"),
+  file.path(dir_release, "inchi_id_vendor_map.csv.gz"),
+  file.path(dir_release, "canonical_inchi_ids.csv.gz")
 ) %>%
   synStoreMany(parent = syn_id_mapping, activity = activity)
 

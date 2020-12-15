@@ -16,7 +16,7 @@ dir_release <- here(release)
 syn_release <- synFindEntityId(release, "syn18457321")
 
 inputs <- c(
-  inchis = synPluck(syn_release, "id_mapping", "canonical_inchis_raw.csv.gz")
+  inchis = synPluck(syn_release, "canonicalization", "canonical_inchi_ids.csv.gz")
 )
 
 # Load compound data -----------------------------------------------------------
@@ -25,38 +25,7 @@ inputs <- c(
 compounds <- inputs[["inchis"]] %>%
   syn() %>%
   read_csv()
-
-compounds_all <- compounds %>%
-  # Compute chemical formula
-  drop_na(raw_inchi) %>%
-  mutate(
-    formula = canonical_inchi %>%
-      str_split_fixed(fixed("/"), 3) %>%
-      {.[, 2]},
-    formula_vector = formula %>%
-      str_match_all("([A-Z][a-z]?)([0-9]*)") %>%
-      map(~set_names(replace_na(as.integer(.x[, 3]), 1L), .x[, 2]))
-  )
-
-compounds_selected <- compounds_all %>%
-  mutate(
-    inchi = case_when(
-      is.na(canonical_inchi) ~ raw_inchi,
-      # Only use canonicalized InChI for compounds that are "drug-like" with
-      # at least 3 carbons
-      map_int(formula_vector, ~if ("C" %in% names(.x)) .x[["C"]] else 0L) >= 3 ~ canonical_inchi,
-      TRUE ~ raw_inchi
-    )
-  )
-
-write_rds(
-  compounds_selected,
-  file.path(dir_release, "all_compounds_canonical.rds"),
-  compress = "gz"
-)
-# compounds_selected <- read_rds(
-#   file.path(dir_release, "all_compounds_canonical.rds")
-# )
+setDT(compounds)
 
 # Create molecular fingerprints ------------------------------------------------
 ###############################################################################T
@@ -88,7 +57,7 @@ fingerprinting_fun <- function(compound_file, output_file, fingerprint_type, fin
       safely(calculate_fingerprints)(
         with(
           compound_df,
-          set_names(compound, id)
+          set_names(canonical_inchi, inchi_id)
         ),
         fingerprint_type = fingerprint_type,
         fingerprint_args = fingerprint_args,
@@ -127,14 +96,7 @@ fingerprinting_args <- tribble(
   "topological_normal", "topological", NULL
 )
 
-cmpd_ids <- compounds_selected %>%
-  distinct(compound = inchi) %>%
-  # Some HMSL compounds don't report inchi or smiles or anything, should have removed
-  # them earlier, removing them here now
-  drop_na() %>%
-  mutate(id = seq_len(n()))
-
-cmpd_chunks <- cmpd_ids %>%
+cmpd_chunks <- compounds %>%
   # slice(1:100) %>%
   chunk_df(300, seed = 1) %>%
   enframe("index", "compounds") %>%
@@ -201,7 +163,6 @@ submitJobs(
 
 waitForJobs()
 
-
 cmpd_fingerprints_chunks <- cmpd_fingerprint_input %>%
   select(
     starts_with("fp_"), output_file
@@ -217,14 +178,11 @@ cmpd_fingerprints_chunks <- cmpd_fingerprint_input %>%
     .groups = "drop"
   )
 
-
-setDT(cmpd_ids)
-
 cmpd_fingerprints  <- cmpd_fingerprints_chunks %>%
   rowwise() %>%
   mutate(
     data = data[
-      cmpd_ids, on = c("names" = "id"), nomatch = NULL
+      cmpd_ids, on = c("names" = "inchi_id"), nomatch = NULL
     ] %>%
       list()
   ) %>%
@@ -250,6 +208,7 @@ fp_folder <- Folder("fingerprints", syn_release) %>%
   chuck("properties", "id")
 
 c(
-  file.path(dir_release, "all_compounds_fingerprints.rds")
+  file.path(dir_release, "all_compounds_fingerprints.rds"),
+  file.path(wd, "canonical_inchis_unique.csv.gz")
 ) %>%
   synStoreMany(parent = fp_folder, activity = fingerprint_activity)
