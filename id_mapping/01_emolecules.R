@@ -183,7 +183,18 @@ emolecules_activity <- Activity(
 syn_emolecules <- synMkdir(syn_release, "id_mapping", "emolecules")
 
 c(
-  file.path(dir_emolecules, "emolecules_vendor_info.csv.gz"),
-  file.path(dir_emolecules, "emolecules_compounds.csv.gz")
+  # file.path(dir_emolecules, "emolecules_vendor_info.csv.gz"),
+  # file.path(dir_emolecules, "emolecules_compounds.csv.gz"),
+  file.path(
+    dir_emolecules,
+    c(
+      "sample.tsv.gz",
+      "suppliers.tsv.gz",
+      "parent.smi.gz",
+      "catalog_categories.tsv.gz",
+      "catalog_tiers.tsv.gz",
+      "category.tsv.gz"
+    )
+  )
 ) %>%
   synStoreMany(syn_emolecules, activity = emolecules_activity)
