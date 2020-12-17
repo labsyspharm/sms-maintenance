@@ -208,7 +208,6 @@ fp_folder <- Folder("fingerprints", syn_release) %>%
   chuck("properties", "id")
 
 c(
-  file.path(dir_release, "all_compounds_fingerprints.rds"),
-  file.path(wd, "canonical_inchis_unique.csv.gz")
+  file.path(dir_release, "all_compounds_fingerprints.rds")
 ) %>%
   synStoreMany(parent = fp_folder, activity = fingerprint_activity)
