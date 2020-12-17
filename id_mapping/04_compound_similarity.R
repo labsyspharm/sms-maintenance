@@ -4,6 +4,9 @@ library(synapser)
 library(synExtra)
 library(lspcheminf)
 library(data.table)
+library(fastSave)
+
+setDTthreads(7)
 
 synLogin()
 syn <- synDownloader(here("tempdl"))
@@ -17,8 +20,8 @@ syn_release <- synFindEntityId(release, "syn18457321")
 
 inputs <- c(
   fingerprints = synPluck(syn_release, "fingerprints", "all_compounds_fingerprints.rds"),
+  compounds = synPluck(syn_release, "canonicalization", "canonical_inchi_ids.csv.gz"),
   old_fingerprints = "syn21614996",
-  old_masses = "syn21572844",
   old_compounds = "syn20835543"
 )
 
@@ -38,7 +41,7 @@ input_data <- inputs %>%
 # Append old fingerprints of previous release ----------------------------------
 ###############################################################################T
 
-all_compounds_including_old <- input_data[["fingerprints"]][
+all_fingerprints <- input_data[["fingerprints"]][
   ,
   data := map2(
     data, fp_name,
@@ -71,7 +74,7 @@ dir.create(wd, showWarnings = FALSE)
 
 # Write FPS files
 pwalk(
-  all_compounds_including_old,
+  all_fingerprints,
   function(fp_name, data, ...) {
     fps_path <- file.path(wd, paste0(fp_name, ".fps"))
     write_lines(
@@ -167,9 +170,10 @@ load_similarities <- function(input_file) {
   sims[
     ,
     .(
+      # Assign unique ID to each consecutive run of identical fingerprints
       identity_group = (fingerprint[-1L] != fingerprint[-length(fingerprint)]) %>%
         {c(0L, cumsum(.))},
-      id
+      inchi_id = id
     )
   ]
 }
@@ -182,11 +186,11 @@ similarity_search_result <- similarity_search_input %>%
     )
   )
 
-write_rds(
+saveRDS.pigz(
   similarity_search_result %>%
     select(fp_name, data),
   file.path(dir_release, "all_compounds_similarity.rds"),
-  compress = "gz"
+  n.cores = 7
 )
 # similarity_search_result <- read_rds(file.path(dir_release, "all_compounds_similarity.rds"))
 
@@ -200,10 +204,21 @@ write_rds(
 library(furrr)
 # library(future.apply)
 
+all_compounds <- rbindlist(
+  list(
+    input_data[["compounds"]],
+    input_data[["old_compounds"]][["data"]][[2]] %>%
+      transmute(
+        inchi_id = paste0("lspci_id_", lspci_id),
+        canonical_inchi = inchi
+      )
+  ),
+  use.names = TRUE
+)
+
 plan(multicore(workers = 8))
 
-cmpd_mass_input <- all_compounds_fingerprints$data[[1]] %>%
-  select(names, compound) %>%
+cmpd_mass_input <- all_compounds %>%
   chunk_df(1000, seed = 1) %>%
   enframe("chunk", "data") %>%
   chunk_df(50, seed = 1)
@@ -238,7 +253,7 @@ cmpd_mass_raw <- cmpd_mass_input %>%
         future_map(
           function(x)
             safely(molecular_mass)(
-              set_names(x[["compound"]], x[["names"]])
+              set_names(x[["canonical_inchi"]], x[["inchi_id"]])
             ),
           .progress = TRUE
         )
@@ -263,8 +278,9 @@ cmpd_mass <- cmpd_mass_all %>%
   map("result") %>%
   bind_rows()
 
-write_csv(
-  cmpd_mass,
+fwrite(
+  cmpd_mass %>%
+    rename(inchi_id = compound),
   file.path(dir_release, "compound_masses.csv.gz")
 )
 
@@ -273,10 +289,7 @@ write_csv(
 
 activity <- Activity(
   name = "Calculate chemical similarity between all compounds",
-  used = c(
-    "syn20692501",
-    "syn22080194"
-  ),
+  used = unname(inputs),
   executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/id_mapping/04_compound_similarity.R"
 )
 
