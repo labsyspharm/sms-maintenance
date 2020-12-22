@@ -7,9 +7,8 @@ library(synExtra)
 library(batchtools)
 library(lspcheminf)
 library(sys)
-library(tidyfast)
 library(data.table)
-library(fastSave)
+library(qs)
 
 synLogin()
 syn <- synDownloader(here("tempdl"))
@@ -44,6 +43,14 @@ raw_compounds <- tribble(
     read_csv() %>%
     distinct(id = parent_id, inchi)
 )
+
+qsave(
+  raw_compounds,
+  file.path(dir_release, "raw_compounds_all.qs"),
+  preset = "balanced"
+)
+
+# raw_compounds <- qread(file.path(dir_release, "raw_compounds_all.qs"),)
 
 # Canonicalize compounds -------------------------------------------------------
 ###############################################################################T
@@ -133,9 +140,9 @@ submitJobs(
     # With 10,000 compounds per batch, should take 172 min, use 250 min
     # Turns out uses much less time, 45 min enough
     walltime = 45*60,
-    chunks.as.arrayjobs = TRUE,
-    # For some reason these nodes fail to execute R because of an "illegal instruction"
-    exclude = "compute-f-17-[09-25]"
+    chunks.as.arrayjobs = TRUE
+    # # For some reason these nodes fail to execute R because of an "illegal instruction"
+    # exclude = "compute-f-17-[09-25]"
   )
 )
 
@@ -146,9 +153,9 @@ canonical_inchis <- all_inchis_dfs %>%
   transmute(
     chunk,
     data = {
-      canonical <- read_csv(
+      canonical <- fread(
         file.path(wd, paste0("compounds_", chunk, "_canonical.csv")),
-        col_types = "ci"
+        colClasses = c("character", "integer")
       ) %>%
         transmute(row = row + 1, canonical_inchi = inchi)
       full_join(
@@ -164,12 +171,12 @@ canonical_inchis <- all_inchis_dfs %>%
   pull(data) %>%
   bind_rows()
 
-write_csv(
+fwrite(
   canonical_inchis,
   file.path(dir_release, "canonical_inchis_raw.csv.gz")
 )
 
-# canonical_inchis <- read_csv(file.path(dir_release, "canonical_inchis_raw.csv.gz"))
+# canonical_inchis <- fread(file.path(dir_release, "canonical_inchis_raw.csv.gz"))
 
 # Link compound IDs and inchis with temporary ID -------------------------------
 ###############################################################################T
@@ -196,15 +203,16 @@ compounds_all <- canonical_inchis %>%
     # Assign unique ID to each canonical inchi, makes downstream processing
     # easier because I don't need to always save the whole inchi
     inchi_id = match(canonical_inchi, unique(canonical_inchi))
-  )
+  ) %>%
+  setDT()
 
-setDT(compounds_all)
-
-saveRDS.pigz(
+qsave(
   compounds_all,
-  file.path(dir_release, "all_compounds_canonical.rds"),
-  n.cores = 7
+  file.path(dir_release, "all_compounds_canonical.qs"),
+  preset = "balanced"
 )
+
+# compounds_all <- qread(file.path(dir_release, "all_compounds_canonical.qs"))
 
 setDTthreads(7)
 
@@ -213,17 +221,13 @@ inchi_vendor_map <- raw_compounds %>%
   mutate(
     data = map(data, mutate, across(id, as.character))
   ) %>%
-  dt_unnest(data) %>%
-  {
-    .[
-      , .(source, vendor_id = id, raw_inchi = inchi)
-    ][
-      compounds_all[, .(inchi_id, raw_inchi)],
-      on = "raw_inchi"
-    ][
-      , .(source, vendor_id, inchi_id)
-    ]
-  }
+  unnest(data) %>%
+  select(source, vendor_id = id, raw_inchi = inchi) %>%
+  full_join(
+    select(compounds_all, inchi_id, raw_inchi),
+    by = "raw_inchi"
+  ) %>%
+  select(source, vendor_id, inchi_id)
 
 fwrite(
   inchi_vendor_map,
@@ -250,8 +254,9 @@ syn_id_mapping <- Folder("canonicalization", parent = syn_release) %>%
   chuck("properties", "id")
 
 c(
+  file.path(dir_release, "raw_compounds_all.qs"),
   file.path(dir_release, "canonical_inchis_raw.csv.gz"),
-  file.path(dir_release, "all_compounds_canonical.rds"),
+  file.path(dir_release, "all_compounds_canonical.qs"),
   file.path(dir_release, "inchi_id_vendor_map.csv.gz"),
   file.path(dir_release, "canonical_inchi_ids.csv.gz")
 ) %>%
