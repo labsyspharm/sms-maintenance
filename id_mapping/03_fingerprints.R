@@ -7,6 +7,7 @@ library(lspcheminf)
 library(batchtools)
 library(processx)
 library(data.table)
+library(qs)
 
 synLogin()
 syn <- synDownloader(here("tempdl"))
@@ -24,8 +25,7 @@ inputs <- c(
 
 compounds <- inputs[["inchis"]] %>%
   syn() %>%
-  read_csv()
-setDT(compounds)
+  fread()
 
 # Create molecular fingerprints ------------------------------------------------
 ###############################################################################T
@@ -91,7 +91,6 @@ reg <- makeRegistry(
 
 fingerprinting_args <- tribble(
   ~fp_name, ~fp_type, ~fp_args,
-  "morgan_chiral", "morgan", list(useChirality = TRUE),
   "morgan_normal", "morgan", list(useChirality = FALSE),
   "topological_normal", "topological", NULL
 )
@@ -107,7 +106,7 @@ cmpd_chunks <- compounds %>%
 pwalk(
   cmpd_chunks,
   function(compounds, compound_file, ...)
-    write_csv(compounds, compound_file)
+    fwrite(compounds, compound_file)
 )
 
 cmpd_fingerprint_input <- cmpd_chunks %>%
@@ -119,10 +118,13 @@ cmpd_fingerprint_input <- cmpd_chunks %>%
     output_file = file.path(wd, paste0("compound_fingerprints_", index_out, ".csv"))
   )
 
-write_rds(
+qsave(
   cmpd_fingerprint_input,
-  file.path(wd, "cmpd_fingerprint_input.rds")
+  file.path(wd, "cmpd_fingerprint_input.qs"),
+  preset = "balanced"
 )
+
+# cmpd_fingerprint_input <- qread(file.path(wd, "cmpd_fingerprint_input.qs"))
 
 batchMap(
   fun = fingerprinting_fun,
@@ -149,7 +151,7 @@ job_table <- findJobs() %>%
   mutate(chunk = 1)
 
 submitJobs(
-  job_table[findExpired()],
+  job_table,
   resources = list(
     memory = "2gb",
     ncpus = 1L,
@@ -182,17 +184,19 @@ cmpd_fingerprints  <- cmpd_fingerprints_chunks %>%
   rowwise() %>%
   mutate(
     data = data[
-      cmpd_ids, on = c("names" = "inchi_id"), nomatch = NULL
+      , .(inchi_id = as.integer(names), fingerprints)
     ] %>%
       list()
   ) %>%
-  ungroup()
+  ungroup() %>%
+  select(-fp_args) %>%
+  unnest(data) %>%
+  setDT() %>%
+  setkey(fp_name, fp_type, inchi_id)
 
-write_rds(
-  cmpd_fingerprints,
-  file.path(dir_release, "all_compounds_fingerprints.rds"),
-  compress = "gz"
-)
+fwrite(cmpd_fingerprints, file.path(dir_release, "all_compounds_fingerprints.csv.gz"))
+
+# cmpd_fingerprints <- fread(file.path(dir_release, "all_compounds_fingerprints.csv.gz"))
 
 # Store to synapse -------------------------------------------------------------
 ###############################################################################T
@@ -208,6 +212,6 @@ fp_folder <- Folder("fingerprints", syn_release) %>%
   chuck("properties", "id")
 
 c(
-  file.path(dir_release, "all_compounds_fingerprints.rds")
+  file.path(dir_release, "all_compounds_fingerprints.csv.gz")
 ) %>%
   synStoreMany(parent = fp_folder, activity = fingerprint_activity)
