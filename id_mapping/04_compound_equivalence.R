@@ -5,31 +5,98 @@ library(here)
 library(synapser)
 library(synExtra)
 library(igraph)
+library(parallel)
+library(qs)
 
 synLogin()
 syn <- synDownloader(here("tempdl"))
 
-release <- "chembl_v25"
+release <- "chembl_v27"
 dir_release <- here(release)
 syn_release <- synFindEntityId(release, "syn18457321")
 
 # Loading files ----------------------------------------------------------------
 ###############################################################################T
 
-similarity_df <- syn("syn21904674") %>%
-  read_rds()
+inputs <- c(
+  masses =  synPluck(syn_release, "id_mapping", "compound_masses.csv.gz"),
+  inchi_id_vendor_map = synPluck(syn_release, "canonicalization", "inchi_id_vendor_map.csv.gz"),
+  similarities = synPluck(syn_release, "id_mapping", "all_compounds_similarity.csv.gz"),
+  chembl_raw = synPluck(syn_release, "raw_data", "chembl_compounds_raw.rds"),
+  hmsl_raw = synPluck(syn_release, "raw_data", "hmsl_compounds_raw.rds"),
+  emolecules_suppliers = synPluck(syn_release, "id_mapping", "emolecules", "suppliers.tsv.gz"),
+  emolecules_vendor_info = synPluck(syn_release, "id_mapping", "emolecules", "emolecules_vendor_info.csv.gz"),
+  old_sms = "syn21094266"
+)
 
-cmpds_canonical <- syn("syn22080194") %>%
-  read_rds()
+input_data <- inputs %>%
+  map(syn) %>%
+  map(
+    function(x)
+      list(
+        `.csv` = partial(fread, colClasses = c(inchi_id = "integer")),
+        `.tsv` = fread,
+        `.rds` = read_rds
+      ) %>%
+      magrittr::extract2(which(str_detect(x, fixed(names(.))))) %>%
+      {.(x)}
+  )
 
-cmpds_hms_raw <- syn("syn20692443") %>%
-  read_rds()
+# https://stackoverflow.com/questions/15280472/in-r-how-do-i-create-consecutive-id-numbers-for-each-repetition-in-a-separate-v
 
-cmpds_chembl_raw <- syn("syn20692440") %>%
-  read_rds()
+# Generate compound name map ---------------------------------------------------
+###############################################################################T
 
-cmpd_mass <- syn("syn21572844") %>%
-  read_csv()
+trusted_suppliers <- c(
+  729, # Enamine
+  1296,
+  417,
+  681,
+  40,
+  1362, #Target Mol
+  1054, # MCE
+  400, # Selleck
+  1806, # Tocris
+  1805
+)
+
+cmpd_names <- tribble(
+  ~source, ~data,
+  "chembl", input_data[["chembl_raw"]] %>%
+    drop_na(pref_name) %>%
+    transmute(id = chembl_id, name = pref_name, name_preference = "primary") %>%
+    bind_rows(
+      input_data[["chembl_raw"]] %>%
+        transmute(id = chembl_id, name = synonyms, name_preference = "secondary") %>%
+        filter(map_lgl(name, negate(is.null))) %>%
+        unchop(name, ptype = tibble(name = character()))
+    ),
+  "hmsl", input_data[["hmsl_raw"]] %>%
+    drop_na(name) %>%
+    transmute(id = hms_id, name, name_preference = "primary") %>%
+    bind_rows(
+      input_data[["hmsl_raw"]] %>%
+        transmute(id = hms_id, name = alternate_names, name_preference = "secondary") %>%
+        filter(map_lgl(name, negate(is.null))) %>%
+        unchop(name, ptype = tibble(name = character()))
+    ),
+  "emolecules", input_data[["emolecules_vendor_info"]] %>%
+    filter(supplier_id %in% trusted_suppliers) %>%
+    transmute(id = as.character(parent_id), name = chemical_name, name_preference = "primary") %>%
+    drop_na()
+) %>%
+  unnest(data) %>%
+  inner_join(
+    input_data[["inchi_id_vendor_map"]],
+    by = c("source", "id" = "vendor_id")
+  ) %>%
+  drop_na() %>%
+  distinct()
+
+fwrite(
+  cmpd_names,
+  file.path(dir_release, "inchi_id_compound_name_map.csv.gz")
+)
 
 # Map HMSL by name -------------------------------------------------------------
 ###############################################################################T
@@ -43,142 +110,276 @@ norm_drug <- function(x) {
     str_replace_all("[^a-zA-Z0-9]", "")
 }
 
-hmsl_name_matches <- similarity_df %>%
-  mutate(
-    data = map(
-      data,
-      ~cmpds_hms_raw %>%
-        filter(
-          !hms_id %in% (
-            .x %>%
-              # similarity_df is presorted so that query < target
-              # therefore HMSL ids must always be in target
-              filter(str_starts(query, fixed("CHEMBL")), str_starts(target, fixed("HMSL"))) %>%
-              pull(target)
-          )
-        ) %>%
-        mutate(
-          name = norm_drug(name)
-        ) %>%
-        select(-chembl_id) %>%
-        left_join(
-          cmpds_chembl_raw %>%
-            transmute(chembl_id, pref_name = norm_drug(pref_name)),
-          by = c("name" = "pref_name")
-        ) %>%
-        drop_na(chembl_id) %>%
-        distinct(query = chembl_id, match = hms_id)
-    )
+hmsl_name_matches <- cmpd_names %>%
+  transmute(name = norm_drug(name), inchi_id) %>%
+  inner_join(
+    cmpd_names %>%
+      filter(source == "hmsl") %>%
+      transmute(inchi_id, name = norm_drug(name)),
+    by = "name"
+  ) %>%
+  distinct(inchi_id.x, inchi_id.y) %>%
+  # Getting rid of one particular false positive match between
+  filter(
+    # Nobiletin and Hexamethoxyflavone
+    !(inchi_id.x == 14475558L & inchi_id.y == 14622253L),
+    # G2-02 and G-202
+    !(inchi_id.x == 9415742L & inchi_id.y == 1309010L),
+    # MI-2
+    !(inchi_id.x == 14112358L & inchi_id.y == 16973627L),
+    # Dabrafenib and GSK2118436
+    !(inchi_id.x == 260420L & inchi_id.y == 9465114L),
+    # INO-1001 and 3-AMINOBENZAMIDE
+    !(inchi_id.x %in% c(6381976L, 8073517L) & inchi_id.y == 16043830L)
   )
 
-identity_df <- bind_rows(
-  similarity_df %>%
-    unnest(data) %>%
-    select(fp_name, fp_type, query, match = target),
-  hmsl_name_matches %>%
-    unnest(data)
-)
+
+hmsl_name_matches %>%
+  filter(inchi_id.x != inchi_id.y)
+
 
 # Defining equivalence classes -------------------------------------------------
 ###############################################################################T
 
-# Making graph of compounds where edges represent identical compounds
-# Extracting the "components" of the graph, isolated subgraphs, they
-# represent equivalence clusters of identical compounds
-
-calc_identity_classes <- function(df) {
-  cmpds_identical_graph <- df %>%
-    distinct(id1, id2) %>%
-    as.matrix() %>%
-    graph_from_edgelist(directed = FALSE)
-
-  components(cmpds_identical_graph) %>%
-    pluck("membership") %>%
-    enframe(value = "eq_class", name = "id") %>%
-    mutate(eq_class = as.integer(eq_class))
-}
-
-assign_func <- function(x, y) mutate(x, !!sym(y) := TRUE)
-
-# Make sure id1 always smaller than id2
-identity_df_sorted <- identity_df %>%
-  filter(match != query) %>%
-  mutate(
-    id1 = ifelse(match > query, query, match),
-    id2 = ifelse(match > query, match, query)
+identity_combined <- merge(
+  input_data[["similarities"]][fp_name == "morgan_normal"][
+    , .(identity_group_morgan_normal = identity_group, inchi_id)
+  ],
+  input_data[["similarities"]][fp_name == "topological_normal"][
+    , .(identity_group_topological_normal = identity_group, inchi_id)
+  ],
+  by = "inchi_id",
+  all = TRUE
+) %>%
+  merge(
+    input_data[["masses"]],
+    by = "inchi_id",
+    all = TRUE
   ) %>%
-  select(-match, -query) %>%
-  distinct()
-
-identity_df_combined <- identity_df_sorted %>%
-  group_nest(fp_name, fp_type) %>%
-  # Making a column in every sub df with the fp_name
-  # as name and all TRUE as values. Used for checking
-  # which fp_name is present for which id1/id2 pair
-  mutate(
-    data = map2(data, fp_name, assign_func)
-  ) %>%
-  pull("data") %>%
-  reduce(full_join, by = c("id1", "id2")) %>%
-  mutate_if(is.logical, replace_na, FALSE) %>%
-  left_join(
-    cmpd_mass %>%
-      distinct(id, mass),
-    by = c("id1" = "id")
-  ) %>%
-  left_join(
-    cmpd_mass %>%
-      distinct(id, mass),
-    by = c("id2" = "id")
-  ) %>%
-  # If masses couldn't be calculated, assume they match...
-  mutate(mass_identical = replace_na(mass.x == mass.y, TRUE)) %>%
-  # Here checking if either of the morgan fingerprints is identical AND topological AND mass
-  mutate_at(
-    vars(starts_with("morgan"),  topological_normal),
-    function(...) pmap_lgl(list(...), all),
-    .$topological_normal, .$mass_identical
-  ) %>%
-  # Correcting the 6 crazy cases where morgan_normal is FALSE and morgan_chiral is TRUE
-  # This should be impossible so setting the morgan_normal to TRUE whenever
-  # morgan_chiral is TRUE
-  mutate(
-    morgan_normal = morgan_chiral | morgan_normal
+  merge(
+    input_data[["inchi_id_vendor_map"]][
+      source == "old_sms", .(inchi_id, lspci_id = as.integer(vendor_id))
+    ],
+    by = "inchi_id",
+    all = TRUE
   )
 
-identity_df_combined_nested <- identity_df_combined %>%
-  select(-starts_with("mass")) %>%
-  gather("fp_name", "is_identical", everything(), -id1, -id2) %>%
-  mutate(fp_type = str_split_fixed(fp_name, fixed("_"), 2)[, 1]) %>%
-  filter(is_identical) %>%
-  # Augmenting identity map with data from the Chembl parent annotation
-  # These are added regardles of fingerprint or mass matches
+# In the graph connect all inchi_ids that share the same fingerprint and mass
+identity_graph <- identity_combined[
+  ,
+  if (.N > 1) .(
+    inchi_id_1 = head(inchi_id, n = -1L),
+    inchi_id_2 = tail(inchi_id, n = -1L),
+    identity_type = "fingerprint"
+  ) else .(
+    inchi_id_1 = inchi_id,
+    inchi_id_2 = inchi_id,
+    identity_type = "fingerprint"
+  ),
+  keyby = .(
+    # Replacing NA with unique pseudo ID's so that NAs don't match
+    identity_group_morgan_normal = identity_group_morgan_normal %>% {
+      na_mask <- is.na(.)
+      .[na_mask] <- -1L * seq_len(sum(na_mask))
+      .
+    },
+    identity_group_topological_normal = identity_group_topological_normal %>% {
+      na_mask <- is.na(.)
+      .[na_mask] <- -1L * seq_len(sum(na_mask))
+      .
+    },
+    # However, we do want to match if mass couldn't be calculated so leaving intact
+    mass
+  )
+] %>%
+  # Adding HMSL name match equivalences
   bind_rows(
-    cmpds_chembl_raw %>%
-      filter(molregno != parent_molregno) %>%
-      left_join(
-        cmpds_chembl_raw %>%
-          select(molregno, match = chembl_id),
-        by = c("parent_molregno" = "molregno")
-      ) %>%
-      select(query = chembl_id, match) %>%
-      filter(match != query) %>%
-      mutate(
-        id1 = ifelse(match > query, query, match),
-        id2 = ifelse(match > query, match, query)
-      ) %>%
-      select(-match, -query) %>%
-      distinct() %>%
-      tidyr::crossing(
-        distinct(similarity_df, fp_name, fp_type)
+    hmsl_name_matches %>%
+      filter(inchi_id.x != inchi_id.y) %>%
+      transmute(
+        inchi_id_1 = inchi_id.x,
+        inchi_id_2 = inchi_id.y,
+        identity_type = "hmsl_name_match"
       )
-  ) %>%
-  group_nest(fp_type, fp_name)
-
-cmpd_eq_classes <- identity_df_combined_nested %>%
-  mutate(
-    data = map(data, calc_identity_classes)
   )
+
+fwrite(
+  identity_graph,
+  file.path(dir_release, "identity_graph.csv.gz")
+)
+
+# identity_graph <- fread(file.path(dir_release, "identity_graph.csv.gz"))
+
+identity_groups <- identity_graph %>%
+  distinct(inchi_id_1, inchi_id_2) %>%
+  mutate(across(.fns = as.character)) %>%
+  as.matrix() %>%
+  graph_from_edgelist(directed = FALSE) %>%
+  components() %>%
+  pluck("membership") %>%
+  enframe(value = "identity_group", name = "inchi_id") %>%
+  mutate(across(.fns = as.integer))
+
+identity_mapped <- identity_combined[
+  setDT(identity_groups),
+  on = "inchi_id",
+  nomatch = NULL
+][
+  ,
+  .(
+    lspci_id = {
+      lspci_ids <- lspci_id %>%
+        na.omit() %>%
+        unique()
+      if (length(lspci_ids) != 1L) NA_integer_ else lspci_ids
+    },
+    inchi_id = {
+      inchi_ids <- inchi_id %>%
+        na.omit() %>%
+        unique()
+      if (length(inchi_ids) == 0L) NA_integer_ else inchi_ids
+    }
+  ),
+  keyby = identity_group
+]
+
+fwrite(
+  identity_mapped,
+  file.path(dir_release, "identity_mapped_raw.csv.gz")
+)
+
+# identity_mapped <- fread(file.path(dir_release, "identity_mapped_raw.csv.gz"))
+
+#
+# inchis <- fread("chembl_v27/canonical_inchi_ids.csv.gz")
+#
+# identity_groups_wo_hmsl <- identity_graph %>%
+#   filter(identity_type != "hmsl_name_match") %>%
+#   distinct(inchi_id_1, inchi_id_2) %>%
+#   mutate(across(.fns = as.character)) %>%
+#   as.matrix() %>%
+#   graph_from_edgelist(directed = FALSE) %>%
+#   components() %>%
+#   pluck("membership") %>%
+#   enframe(value = "identity_group", name = "inchi_id") %>%
+#   mutate(across(.fns = as.integer))
+#
+# identity_groups_conflicts <- identity_groups %>%
+#   inner_join(
+#     identity_groups_wo_hmsl %>%
+#       rename(identity_group_wo_hmsl = identity_group),
+#     by = "inchi_id"
+#   ) %>%
+#   group_by(identity_group) %>%
+#   filter(length(unique(identity_group_wo_hmsl)) > 1) %>%
+#   ungroup() %>%
+#   left_join(
+#     input_data[["inchi_id_vendor_map"]],
+#     by = "inchi_id"
+#   )
+#
+# identity_groups_conflicts_inchis <- identity_groups_conflicts %>%
+#   distinct(identity_group, identity_group_wo_hmsl, inchi_id) %>%
+#   left_join(
+#     inchis,
+#     by = "inchi_id"
+#   ) %>%
+#   arrange(identity_group)
+#
+# library(lspcheminf)
+#
+# group_walk(
+#   group_by(identity_groups_conflicts_inchis, identity_group),
+#   function(df, key) {
+#     draw_compound_grid(
+#       compounds(
+#         with(
+#           df,
+#           set_names(
+#             canonical_inchi,
+#             inchi_id
+#           )
+#         ),
+#         descriptor = "inchi"
+#       ),
+#       here(paste0("hmsl_name_match_compounds_", key[["identity_group"]], ".svg")),
+#       draw_args = list(molsPerRow = 2, subImgSize = c(400, 400))
+#     )
+#   }
+# )
+
+
+
+# => Matches seem reasonable, adding them. Except for a bunch where
+# there are multiple compounds with the same name and the structure
+# doesn't match at all. Excluding them manually above
+
+
+# Checking strange cases with multiple old lspci_ids ---------------------------
+###############################################################################T
+#
+# identity_mapped_multiple_lspci_id <- copy(identity_combined)[
+#   ,
+#   if (length(unique(na.omit(lspci_id))) > 1) cbind(.SD, identity_group = .GRP),
+#   keyby = .(identity_group_morgan_normal, identity_group_topological_normal, mass)
+# ]
+#
+# fwrite(
+#   identity_mapped_multiple_lspci_id,
+#   file.path(dir_release, "identity_mapped_multiple_lspci_id.csv.gz")
+# )
+#
+# # identity_mapped_multiple_lspci_id <- qread(file.path(dir_release, "identity_mapped_multiple_lspci_id.qs"))
+#
+# # Checking which compounds map to multiple lspci_ids
+# library(lspcheminf)
+#
+# inchis <- fread("chembl_v27/canonical_inchi_ids.csv.gz")
+# #
+# old_inchis <- syn("syn21094266") %>%
+#   fread()
+#
+# pwalk(
+#   identity_mapped_multiple_lspci_id[
+#     , .(data = list(.SD)),
+#     keyby = "identity_group"
+#   ],
+#   function(identity_group, data, ...) {
+#     cmpds <- c(
+#       set_names(
+#         data[["inchi_id"]]
+#       )
+#     ) %>%
+#       na.omit()
+#     cmpd_inchis <- cmpds %>%
+#       enframe("inchi_name", "inchi_id") %>%
+#       inner_join(
+#         inchis,
+#         by = "inchi_id"
+#       ) %>%
+#       bind_rows(
+#         old_inchis %>%
+#           filter(lspci_id %in% data[["lspci_id"]]) %>%
+#           transmute(canonical_inchi = inchi, inchi_name = paste0("lspci_id_", lspci_id))
+#       )
+#     # browser()
+#     draw_compound_grid(
+#       compounds(
+#         with(
+#           cmpd_inchis,
+#           set_names(canonical_inchi, inchi_name)
+#         ),
+#         descriptor = "inchi"
+#       ),
+#       here(paste0(identity_group, "_compounds.svg"))
+#     )
+#   }
+# )
+
+
+# ==> There are only a couple such cases (58), it is unclear why some of these
+# had distinct lspci_ids in the old release to begin with. Fingerprint and mass
+# is identical
 
 # Sanity check equivalence classes ---------------------------------------------
 ###############################################################################T
@@ -187,73 +388,81 @@ cmpd_eq_classes <- identity_df_combined_nested %>%
 # find using our canonicalization followed by fingerprint matching approach.
 
 # Augmenting identity map with data from the Chembl parent annotation
-chembl_cmpds_with_parent <- cmpds_chembl_raw %>%
+chembl_cmpds_with_parent <- input_data[["chembl_raw"]] %>%
   filter(molregno != parent_molregno) %>%
   left_join(
-    cmpds_chembl_raw %>%
-      select(molregno, parent_chembl_id = chembl_id, parent_standard_inchi = standard_inchi),
+    input_data[["chembl_raw"]] %>%
+      select(molregno, parent_chembl_id = chembl_id),
     by = c("parent_molregno" = "molregno")
   ) %>%
-  select(molregno, chembl_id, parent_chembl_id, standard_inchi, parent_standard_inchi)
-#
-# identity_df_augmented <- identity_df %>%
-#   bind_rows(
-#     chembl_cmpds_with_parent %>%
-#       select(query = chembl_id, match = parent_chembl_id) %>%
-#       distinct() %>%
-#       tidyr::crossing(select(similarity_df, fp_name, fp_type))
-#   )
-
-chembl_cmpds_with_parent_eq_class <- chembl_cmpds_with_parent %>%
+  select(molregno, chembl_id, parent_chembl_id) %>%
   left_join(
-    cmpd_eq_classes %>%
-      unnest(data),
-    by = c("chembl_id" = "id")
+    input_data[["inchi_id_vendor_map"]][
+      , .(vendor_id, inchi_id)
+    ],
+    by = c("chembl_id" = "vendor_id")
   ) %>%
   left_join(
-    cmpd_eq_classes %>%
-      unnest(data) %>%
-      rename(parent_eq_class = eq_class),
-    by = c("parent_chembl_id" = "id", "fp_name", "fp_type")
+    input_data[["inchi_id_vendor_map"]][
+      , .(vendor_id, inchi_id_parent = inchi_id)
+    ],
+    by = c("chembl_id" = "vendor_id")
   )
 
-# Compounds where the eq_class of the Chembl parent compound is different
-# from the eq_class of the compound itself
-chembl_cmpds_with_parent_disagree <- chembl_cmpds_with_parent_eq_class %>%
-  filter(eq_class != parent_eq_class)
-# is now zero length thanks to addition of parent annotation from chembl
+chembl_cmpds_with_parent %>% filter(inchi_id != inchi_id_parent)
 
+# => 0 rows. That means we actually capture all compound-parent relationships
+# annotated in ChEMBL with our pipeline
 
 # Adding equivalence class for all compounds -----------------------------------
 ###############################################################################T
 
 # Add eq_class for compounds for which no inchi is known or whose inchi is not parseable
-add_missing_eq_class <- function(eq_class_df, compound_df) {
-  compound_df %>%
-    left_join(eq_class_df, by = "id") %>%
-    mutate(
-      eq_class = if_else(
-        is.na(eq_class),
-        cumsum(is.na(eq_class)) + max(eq_class, na.rm = TRUE),
-        eq_class
-      )
-    )
-}
 
-all_eq_class <- cmpd_eq_classes %>%
+identity_mapped_additional <- identity_mapped %>%
+  bind_rows(
+    {
+      additional_inchis <- setdiff(
+        input_data[["inchi_id_vendor_map"]][["inchi_id"]],
+        .[["inchi_id"]]
+      )
+      tibble(
+        inchi_id = additional_inchis,
+        identity_group = seq_along(additional_inchis) + max(.[["identity_group"]])
+      )
+    }
+  ) %>%
+  # Assign lspci_ids where non has been carried over from the previous version
   mutate(
-    data = map(
-      data,
-      add_missing_eq_class,
-      compound_df = cmpds_canonical %>%
-        distinct(id)
-    )
+    lspci_id = {
+      na_mask <- is.na(lspci_id)
+      na_identity_groups <- identity_group[na_mask]
+      new_lspci_ids <- c(
+        0L,
+        cumsum(
+          head(na_identity_groups, -1L) != tail(na_identity_groups, -1L)
+        )
+      ) + as.integer(max(input_data[["old_sms"]][["lspci_id"]])) + 1L
+      lspci_id[na_mask] <- new_lspci_ids
+      lspci_id
+    }
   )
 
-write_rds(
-  all_eq_class,
-  file.path(dir_release, "all_compounds_equivalence_classes.rds"),
-  compress = "gz"
+fwrite(
+  identity_mapped_additional,
+  file.path(dir_release, "inchi_id_lspci_id_map.csv.gz")
+)
+
+cmpd_names_lspci_id <- cmpd_names %>%
+  left_join(
+    identity_mapped_additional %>%
+      select(inchi_id, lspci_id),
+    by = "inchi_id"
+  )
+
+fwrite(
+  cmpd_names_lspci_id,
+  file.path(dir_release, "lspci_id_compound_name_map.csv.gz")
 )
 
 # Store to synapse -------------------------------------------------------------
@@ -261,13 +470,7 @@ write_rds(
 
 activity <- Activity(
   name = "Calculate compound equivalence classes",
-  used = c(
-    "syn21904674",
-    "syn22080194",
-    "syn20692443",
-    "syn20692440",
-    "syn21572844"
-  ),
+  used = unname(inputs),
   executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/id_mapping/04_compound_equivalence.R"
 )
 
@@ -276,7 +479,8 @@ syn_id_mapping <- Folder("id_mapping", parent = syn_release) %>%
   chuck("properties", "id")
 
 c(
-  file.path(dir_release, "all_compounds_equivalence_classes.rds")
+  file.path(dir_release, "lspci_id_compound_name_map.csv.gz"),
+  file.path(dir_release, "inchi_id_lspci_id_map.csv.gz")
 ) %>%
   synStoreMany(parent = syn_id_mapping, activity = activity)
 

@@ -45,14 +45,14 @@ emolecules_files <- emolecules_file_names %>%
   keep(str_ends, fixed("tsv.gz")) %>%
   set_names(str_split_fixed(., fixed("."), 2)[, 1]) %>%
   map_chr(~file.path(dir_emolecules, .x)) %>%
-  map(read_tsv)
+  map(fread)
 
 
 # Process structures -----------------------------------------------------------
 ###############################################################################T
 
-parent_molecules <- read_delim(
-  file.path(dir_emolecules, "parent.smi.gz"), " "
+parent_molecules <- fread(
+  file.path(dir_emolecules, "parent.smi.gz"), sep = " "
 ) %>%
   rename(smiles = isosmiles)
 
@@ -137,9 +137,7 @@ emolecules_files[["sample"]] %>%
 # 2           3 24620788 Screening compounds  Catalog screening compounds
 # 3           4 36965134 Commercial compounds Catalog of commercially-available compounds
 
-compounds <- lazy_dt(emolecules_files[["sample"]])
-
-filtered_compounds <- compounds %>%
+filtered_compounds <- emolecules_files[["sample"]] %>%
   filter(
     catalog_id %in% intersect(
       emolecules_files[["catalog_tiers"]] %>%
@@ -153,8 +151,7 @@ filtered_compounds <- compounds %>%
         ) %>%
         pull(catalog_id)
     )
-  ) %>%
-  as_tibble()
+  )
 
 filtered_compounds$parent_id %>% unique() %>% length()
 #[1] 19692658

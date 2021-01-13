@@ -4,7 +4,6 @@ library(synapser)
 library(synExtra)
 library(lspcheminf)
 library(data.table)
-library(fastSave)
 
 setDTthreads(7)
 
@@ -19,12 +18,9 @@ syn_release <- synFindEntityId(release, "syn18457321")
 ###############################################################################T
 
 inputs <- c(
-  fingerprints = synPluck(syn_release, "fingerprints", "all_compounds_fingerprints.rds"),
-  compounds = synPluck(syn_release, "canonicalization", "canonical_inchi_ids.csv.gz"),
-  old_fingerprints = "syn21614996",
-  old_compounds = "syn20835543"
+  fingerprints = synPluck(syn_release, "fingerprints", "all_compounds_fingerprints.csv.gz"),
+  compounds = synPluck(syn_release, "canonicalization", "canonical_inchi_ids.csv.gz")
 )
-
 
 input_data <- inputs %>%
   map(syn) %>%
@@ -32,38 +28,11 @@ input_data <- inputs %>%
     function(x)
       switch(
         tools::file_ext(x),
-        `gz` = read_csv,
+        `gz` = fread,
         `rds` = read_rds
       )(x) %>%
       setDT()
   )
-
-# Append old fingerprints of previous release ----------------------------------
-###############################################################################T
-
-all_fingerprints <- input_data[["fingerprints"]][
-  ,
-  data := map2(
-    data, fp_name,
-    function(data, fp_name) {
-      setDT(data)
-      old_fingerprints <- input_data[["old_fingerprints"]][
-        fingerprint_type == fp_name,
-        .(
-          names = paste0("lspci_id_", lspci_id),
-          fingerprints = fingerprint
-        )
-      ]
-      rbindlist(
-        list(
-          data[, .(names, fingerprints)],
-          old_fingerprints
-        )
-      )
-    }
-  )
-]
-
 
 # Calculate similarity between all compounds -----------------------------------
 ###############################################################################T
@@ -71,10 +40,13 @@ all_fingerprints <- input_data[["fingerprints"]][
 wd <- file.path("/n", "scratch3", "users", "c", "ch305", "simsearch")
 dir.create(wd, showWarnings = FALSE)
 
+fingerprints_grouped <- input_data[["fingerprints"]][
+  , .(data = list(.SD)), keyby = c("fp_name", "fp_type")
+]
 
 # Write FPS files
 pwalk(
-  all_fingerprints,
+  fingerprints_grouped,
   function(fp_name, data, ...) {
     fps_path <- file.path(wd, paste0(fp_name, ".fps"))
     write_lines(
@@ -85,7 +57,7 @@ pwalk(
       fps_path
     )
     fwrite(
-      data[, .(fingerprints, names)],
+      data[, .(fingerprints, inchi_id)],
       file = fps_path,
       append = TRUE,
       sep = "\t",
@@ -127,7 +99,9 @@ similarity_fun <- function(input_file, output_file) {
   #   input_file = file.path(wd, paste0(fp_name, ".fps")),
   #   output_file = file.path(wd, paste0(fp_name, ".txt"))
   # )
-similarity_search_input <- tibble(fp_name = c("morgan_normal", "morgan_chiral", "topological_normal")) %>%
+similarity_search_input <- tibble(
+  fp_name = c("morgan_normal", "morgan_chiral", "topological_normal")
+) %>%
   mutate(
     input_file = file.path(wd, paste0(fp_name, ".fps")),
     output_file = file.path(wd, paste0(fp_name, "_sorted.fps"))
@@ -144,28 +118,11 @@ pwalk(
 ###############################################################################T
 
 load_similarities <- function(input_file) {
-  # n_compounds <- 20792499L
-  # n_compounds_p <- run(
-  #   "wc", c("-l", input_file)
-  # )
-  # n_componds <- str_split_fixed(n_compounds_p[["stdout"]], fixed(" "), 2)[[1]] %>%
-  #   as.integer()
-  # name_vec <- character(n_compounds)
-  # gruop_vec <-
-  # con = file(input_file, "r")
-  # while (TRUE) {
-  #   line = readLines(con, n = 1)
-  #   if ( length(line) == 0 ) {
-  #     break
-  #   }
-  #   print(line)
-  # }
-  # close(con)
   sims <- fread(
     input_file,
     sep = "\t",
     header = FALSE,
-    col.names = c("fingerprint", "id")
+    col.names = c("fingerprint", "inchi_id")
   )
   sims[
     ,
@@ -173,7 +130,7 @@ load_similarities <- function(input_file) {
       # Assign unique ID to each consecutive run of identical fingerprints
       identity_group = (fingerprint[-1L] != fingerprint[-length(fingerprint)]) %>%
         {c(0L, cumsum(.))},
-      inchi_id = id
+      inchi_id
     )
   ]
 }
@@ -186,13 +143,14 @@ similarity_search_result <- similarity_search_input %>%
     )
   )
 
-saveRDS.pigz(
+fwrite(
   similarity_search_result %>%
-    select(fp_name, data),
-  file.path(dir_release, "all_compounds_similarity.rds"),
-  n.cores = 7
+    select(fp_name, data) %>%
+    unnest(data),
+  file.path(dir_release, "all_compounds_similarity.csv.gz")
 )
-# similarity_search_result <- read_rds(file.path(dir_release, "all_compounds_similarity.rds"))
+
+# similarity_search_result <- fread(file.path(dir_release, "all_compounds_similarity.csv.gz"))
 
 
 # Calculate compound mass -----------------------------------
@@ -204,21 +162,9 @@ saveRDS.pigz(
 library(furrr)
 # library(future.apply)
 
-all_compounds <- rbindlist(
-  list(
-    input_data[["compounds"]],
-    input_data[["old_compounds"]][["data"]][[2]] %>%
-      transmute(
-        inchi_id = paste0("lspci_id_", lspci_id),
-        canonical_inchi = inchi
-      )
-  ),
-  use.names = TRUE
-)
-
 plan(multicore(workers = 8))
 
-cmpd_mass_input <- all_compounds %>%
+cmpd_mass_input <- input_data[["compounds"]] %>%
   chunk_df(1000, seed = 1) %>%
   enframe("chunk", "data") %>%
   chunk_df(50, seed = 1)
@@ -276,13 +222,17 @@ cmpd_mass_errors %>% map_lgl(is.null) %>% all()
 
 cmpd_mass <- cmpd_mass_all %>%
   map("result") %>%
-  bind_rows()
+  rbindlist() %>% {
+    .[, .(inchi_id = as.integer(compound), mass)] %>%
+      setkey(inchi_id)
+  }
 
 fwrite(
-  cmpd_mass %>%
-    rename(inchi_id = compound),
+  cmpd_mass,
   file.path(dir_release, "compound_masses.csv.gz")
 )
+
+# cmpd_mass <- fread(file.path(dir_release, "compound_masses.csv.gz"))
 
 # Store to synapse -------------------------------------------------------------
 ###############################################################################T
@@ -298,7 +248,7 @@ syn_id_mapping <- Folder("id_mapping", parent = syn_release) %>%
   chuck("properties", "id")
 
 c(
-  file.path(dir_release, "all_compounds_similarity.rds"),
+  file.path(dir_release, "all_compounds_similarity.csv.gz"),
   file.path(dir_release, "compound_masses.csv.gz")
 ) %>%
   synStoreMany(parentId = syn_id_mapping, activity = activity)
