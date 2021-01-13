@@ -25,7 +25,8 @@ dir.create(dir_release, showWarnings = FALSE)
 inputs <- list(
   chembl_compounds = synPluck(syn_release, "raw_data", "chembl_compounds_raw.rds"),
   hmsl_compounds = synPluck(syn_release, "raw_data", "hmsl_compounds_raw.rds"),
-  emolecules_compounds = synPluck(syn_release, "id_mapping", "emolecules", "emolecules_compounds.csv.gz")
+  emolecules_compounds = synPluck(syn_release, "id_mapping", "emolecules", "emolecules_compounds.csv.gz"),
+  old_sms_compounds = "syn21094266"
 )
 
 raw_compounds <- tribble(
@@ -34,14 +35,18 @@ raw_compounds <- tribble(
     syn() %>%
     read_rds() %>%
     distinct(id = chembl_id, inchi = standard_inchi),
-  "hsml", inputs[["hmsl_compounds"]] %>%
+  "hmsl", inputs[["hmsl_compounds"]] %>%
     syn() %>%
     read_rds() %>%
     distinct(id = hms_id, inchi),
   "emolecules", inputs[["emolecules_compounds"]] %>%
     syn() %>%
-    read_csv() %>%
-    distinct(id = parent_id, inchi)
+    fread() %>%
+    distinct(id = parent_id, inchi),
+  "old_sms", inputs[["old_sms_compounds"]] %>%
+    syn() %>%
+    fread() %>%
+    transmute(id = lspci_id, inchi = as.character(inchi))
 )
 
 qsave(
@@ -50,7 +55,7 @@ qsave(
   preset = "balanced"
 )
 
-# raw_compounds <- qread(file.path(dir_release, "raw_compounds_all.qs"),)
+# raw_compounds <- qread(file.path(dir_release, "raw_compounds_all.qs"))
 
 # Canonicalize compounds -------------------------------------------------------
 ###############################################################################T
@@ -65,6 +70,19 @@ all_inchis <- raw_compounds %>%
   pull(data) %>%
   map(pull, inchi) %>%
   reduce(union)
+
+# remaining_inchis <- raw_compounds %>%
+#   filter(source == "old_sms") %>%
+#   chuck("data", 1) %>%
+#   pull(inchi) %>%
+#   setdiff(
+#     raw_compounds %>%
+#       filter(source != "old_sms") %>%
+#       pull(data) %>%
+#       map(pull, inchi) %>%
+#       reduce(union)
+#   )
+
 
 all_inchis_dfs <- tibble(compound = all_inchis) %>%
   chunk_df(ceiling(nrow(.)/10000), seed = 1) %>%
@@ -139,7 +157,7 @@ submitJobs(
     # Approximately 58 compounds processed per minute
     # With 10,000 compounds per batch, should take 172 min, use 250 min
     # Turns out uses much less time, 45 min enough
-    walltime = 45*60,
+    walltime = 3*60*60,
     chunks.as.arrayjobs = TRUE
     # # For some reason these nodes fail to execute R because of an "illegal instruction"
     # exclude = "compute-f-17-[09-25]"
@@ -183,6 +201,7 @@ fwrite(
 
 
 compounds_all <- canonical_inchis %>%
+  # filter(raw_inchi %in% remaining_inchis) %>%
   # Compute chemical formula
   drop_na(raw_inchi) %>%
   mutate(
@@ -214,7 +233,7 @@ qsave(
 
 # compounds_all <- qread(file.path(dir_release, "all_compounds_canonical.qs"))
 
-setDTthreads(7)
+# setDTthreads(7)
 
 # Map vendor ID's to canonical Inchi ID
 inchi_vendor_map <- raw_compounds %>%
