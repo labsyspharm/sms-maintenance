@@ -11,7 +11,7 @@ library(RPostgres)
 synLogin()
 syn <- synDownloader(here("tempdl"))
 
-release <- "chembl_v25"
+release <- "chembl_v27"
 dir_release <- here(release)
 syn_release <- synFindEntityId(release, "syn18457321")
 
@@ -25,7 +25,7 @@ syn_release <- synFindEntityId(release, "syn18457321")
 drv <- dbDriver("Postgres")
 # creates a connection to the postgres database
 # note that "con" will be used later in each connection to the database
-con <- dbConnect(drv, dbname = "chembl_25",
+con <- dbConnect(drv, dbname = "chembl_27",
                  host = "localhost", port = 5432,
                  user = "chug")
 
@@ -33,7 +33,7 @@ con <- dbConnect(drv, dbname = "chembl_25",
 ###############################################################################T
 
 download.file(
-  "ftp://ftp.ebi.ac.uk/pub/databases/chembl/ChEMBLdb/releases/chembl_25/chembl_uniprot_mapping.txt",
+  "ftp://ftp.ebi.ac.uk/pub/databases/chembl/ChEMBLdb/releases/chembl_27/chembl_uniprot_mapping.txt",
   file.path(dir_release, "chembl_uniprot_mapping.txt")
 )
 
@@ -88,11 +88,6 @@ chembl_map_with_uniprot <- chembl_info_all_targets %>%
       dplyr::select(chembl_id, uniprot_id),
     by = "chembl_id"
   )
-
-download.file(
-  "ftp://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/idmapping/idmapping_selected.tab.gz",
-  file.path(dir_release, "uniprot_id_mapping.tsv.gz")
-)
 
 uniprot_to_entrez <- function(df, group) {
   mart <- useMart(
@@ -168,14 +163,14 @@ chembl_map_with_entrez %>%
 
 download.file(
   "ftp://ftp.ncbi.nih.gov/gene/DATA/gene_info.gz",
-  file.path(dir_release, "gene_info_20190829.gz")
+  file.path(dir_release, "gene_info_20200113.gz")
 )
 
 
 # Using vroom here instead of loading the entire csv because it is downright massive
 # and vroom is much faster
 gene_info <- vroom(
-  file.path(dir_release, "gene_info_20190829.gz"),
+  file.path(dir_release, "gene_info_20200113.gz"),
   delim = "\t",
   col_names = c(
     "tax_id", "entrez_gene_id", "entrez_symbol", "locus_tag", "entrez_synonyms", "db_xrefs", "chromosome",
