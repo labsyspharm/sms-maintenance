@@ -96,12 +96,12 @@ canonical_members_ranked <- input_data[["inchi_id_lspci_id_map"]] %>%
         -annotated_pref_name,
         -annotated_as_parent,
         -n_assays,
-        -id_number
+        id_number
       )
     ][
       ,
       rank := seq_len(.N),
-      keyby = .(lspci_id, source)
+      keyby = "lspci_id"
     ]
   }
 
@@ -169,11 +169,6 @@ canonical_inchis_ranked <- copy(canonical_members_ranked)[
   ,
   source := factor(source, levels = VENDOR_RANKING)
 ][
-  order(
-    lspci_id,
-    source
-  )
-][
   ,
   {
     inchi_ids <- unique(inchi_id)
@@ -220,7 +215,6 @@ approval_table <- copy(canonical_members_ranked)[
 ###############################################################################T
 
 compound_dictionary <- canonical_members_ranked[
-  rank == 1L,
   c(
     list(
       inchi_id = head(inchi_id, n = 1)
@@ -270,7 +264,7 @@ fwrite(
 cmpd_wrangling_activity <- Activity(
   name = "Map and wrangle canonical compound data.",
   used = unname(inputs),
-  executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/id_mapping/04_compound_id_mapping.R"
+  executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/id_mapping/05_process_mapped_compounds.R"
 )
 
 syn_id_mapping <- synMkdir(syn_release, "compounds_processed")
