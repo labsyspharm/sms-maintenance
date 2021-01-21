@@ -258,6 +258,29 @@ fwrite(
 
 # compound_dictionary <- fread(file.path(dir_release, "compound_dictionary.csv.gz"))
 
+# Create map of vendor IDs to lspci_ids ----------------------------------------
+###############################################################################T
+
+inchi_id_vendor_id_map <- merge(
+  input_data[["inchi_id_lspci_id_map"]][
+    , .(lspci_id, inchi_id)
+  ] %>%
+    na.omit(),
+  input_data[["inchi_id_vendor_map"]] %>%
+    na.omit(),
+  by = "inchi_id",
+  all = FALSE
+)[
+  ,
+  inchi_id := NULL
+] %>%
+  setkey(lspci_id, source)
+
+fwrite(
+  inchi_id_vendor_id_map,
+  file.path(dir_release, "lspci_id_vendor_id_map.csv.gz")
+)
+
 # Store to synapse -------------------------------------------------------------
 ###############################################################################T
 
@@ -275,7 +298,8 @@ c(
   file.path(dir_release, "lspci_id_compound_compound_names_ranked.csv.gz"),
   file.path(dir_release, "lspci_id_canonical_compound_names.csv.gz"),
   file.path(dir_release, "lspci_id_canonical_inchis_ranked.csv.gz"),
-  file.path(dir_release, "compound_dictionary.csv.gz")
+  file.path(dir_release, "compound_dictionary.csv.gz"),
+  file.path(dir_release, "lspci_id_vendor_id_map.csv.gz")
 ) %>%
   synStoreMany(parent = syn_id_mapping, activity = cmpd_wrangling_activity)
 
