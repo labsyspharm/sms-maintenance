@@ -11,9 +11,31 @@ library(synExtra)
 synLogin()
 syn <- synDownloader(here("tempdl"))
 
-release <- "chembl_v25"
+release <- "chembl_v27"
 dir_release <- here(release)
 syn_release <- synFindEntityId(release, "syn18457321")
+
+
+# Set directories, import files ------------------------------------------------
+###############################################################################T
+
+inputs <- list(
+  target_dictionary = synPluck(syn_release, "id_mapping", "target_dictionary_wide.csv.gz")
+)
+
+input_data <- inputs %>%
+  map(syn) %>%
+  map(
+    function(x)
+      list(
+        `.csv` = partial(fread, colClasses = c(inchi_id = "integer")),
+        `.tsv` = fread,
+        `.rds` = read_rds
+      ) %>%
+      magrittr::extract2(which(str_detect(x, fixed(names(.))))) %>%
+      {.(x)}
+  )
+
 
 # connect to chembl v. 24_1  ---------------------------------------------------
 ###############################################################################T
@@ -25,13 +47,9 @@ syn_release <- synFindEntityId(release, "syn18457321")
 drv <- dbDriver("Postgres")
 # creates a connection to the postgres database
 # note that "con" will be used later in each connection to the database
-con <- dbConnect(drv, dbname = "chembl_25",
+con <- dbConnect(drv, dbname = str_replace(release, fixed("v"), ""),
                  host = "localhost", port = 5432,
                  user = "chug")
-
-# Get target gene mapping
-map_chembl_tid_gene_id <- syn("syn20693721") %>%
-  read_csv(col_types = "ciciccciccccc")
 
 
 # get biochemical data all compounds -------------------------------------------
@@ -67,6 +85,8 @@ activities_biochem_1 <- dbGetQuery(con, paste0("select A.doc_id, ACT.activity_id
                                              "))
 View(activities_biochem_1)
 
+
+
 # Data from "Navigating the Kinome" paper is annotated using F (functional) assay type
 # whereas most other data B (binding)
 activities_biochem_2<-dbGetQuery(con, paste0("select A.doc_id, ACT.activity_id, A.assay_id, ACT.molregno, MOL_DICT.chembl_id as chembl_id_compound, ACT.standard_relation, ACT.standard_type,
@@ -96,7 +116,7 @@ activities_biochem <- data.table::rbindlist(
 
 activities_biochem_geneid <- activities_biochem %>%
   left_join(
-    map_chembl_tid_gene_id %>%
+    input_data[["target_dictionary"]] %>%
       distinct(
         tid,
         chembl_id_target = chembl_id,
@@ -109,12 +129,11 @@ activities_biochem_geneid <- activities_biochem %>%
       ) %>%
       mutate_at(vars(tid), as.integer64),
     by = "tid"
-  ) %>%
-  as_tibble()
+  )
 
-write_csv(
+fwrite(
   activities_biochem_geneid,
-  file.path(dir_release, "chembl_biochemicaldata.csv.gz")
+  file.path(dir_release, "chembl_biochemical_raw.csv.gz")
 )
 
 # get phenotypic data all compounds --------------------------------------------
@@ -215,6 +234,7 @@ standard_unit_map <- c(
 )
 
 pheno_activities <- activities_1 %>%
+  filter(standard_value > 0) %>%
   mutate(
     standard_value = standard_value * standard_unit_map[standard_units],
     log10_value = log10(standard_value * standard_unit_map[standard_units]),
@@ -224,9 +244,9 @@ pheno_activities <- activities_1 %>%
   filter(standard_units %in% standard_units_ok) %>%
   as_tibble()
 
-write_csv(
+fwrite(
   pheno_activities,
-  file.path(dir_release, "chembl_phenotypic_assaydata.csv.gz")
+  file.path(dir_release, "chembl_phenotypic_raw.csv.gz")
 )
 
 # get clinical &  info ---------------------------------------------------------
@@ -241,9 +261,9 @@ approval_info<-dbGetQuery(con, paste0("select pref_name, chembl_id as chembl_id_
                               where max_phase >0"))
 View(approval_info)
 
-write_csv(
+fwrite(
   approval_info,
-  file.path(dir_release, "chembl_approval_info_phase1to4cmpds.csv.gz")
+  file.path(dir_release, "chembl_approval_info_raw.csv.gz")
 )
 
 
@@ -256,20 +276,15 @@ doc_info <- dbGetQuery(
   FROM docs"
 )
 
-write_csv(
-  doc_info,
-  file.path(dir_release, "chembl_doc_info.csv.gz")
-)
-
-doc_ref_info <- doc_info %>%
+doc_info_long <- doc_info %>%
   as_tibble() %>%
   dplyr::select(chembl_id_doc, doc_type, pubmed_id, doi, patent_id) %>%
   mutate_at(vars(pubmed_id, doi, patent_id), as.character) %>%
   gather("reference_type", "reference_id", pubmed_id, doi, patent_id, na.rm = TRUE)
 
-write_csv(
-  doc_ref_info,
-  file.path(dir_release, "chembl_ref_info.csv.gz")
+fwrite(
+  doc_info_long,
+  file.path(dir_release, "chembl_ref_info_raw.csv.gz")
 )
 
 # Store to synapse -------------------------------------------------------------
@@ -281,21 +296,13 @@ fetch_chembl_activity <- Activity(
   executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/data_processing/01_chembl_data.R"
 )
 
-c(
-  file.path(dir_release, "chembl_biochemicaldata.csv.gz"),
-  file.path(dir_release, "chembl_phenotypic_assaydata.csv.gz"),
-  file.path(dir_release, "chembl_doc_info.csv.gz")
-) %>%
-  synStoreMany(parent = "syn21064123", activity = fetch_chembl_activity)
-
+chembl_raw_syn <- synMkdir(syn_release, "raw_data", "chembl")
 
 c(
-  file.path(dir_release, "chembl_approval_info_phase1to4cmpds.csv.gz")
-) %>%
-  synStoreMany(parent = "syn21064120", activity = fetch_chembl_activity)
+  file.path(dir_release, "chembl_biochemical_raw.csv.gz"),
+  file.path(dir_release, "chembl_phenotypic_raw.csv.gz"),
+  file.path(dir_release, "chembl_ref_info_raw.csv.gz"),
+  file.path(dir_release, "chembl_approval_info_raw.csv.gz")
 
-c(
-  file.path(dir_release, "chembl_ref_info.csv.gz")
 ) %>%
-  synStoreMany(parent = "syn20830877", activity = fetch_chembl_activity)
-
+  synStoreMany(parent = chembl_raw_syn, activity = fetch_chembl_activity)
