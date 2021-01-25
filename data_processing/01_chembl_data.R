@@ -61,29 +61,50 @@ BAO_format <- dbGetQuery(con, paste0("select *
 #where bao_id in ('",paste(biochem_test$bao_format%>%unique,collapse="','"),"')
 View(BAO_format)
 
+# Normalize all units to nM, saving the factors here
+standard_unit_map <- c(
+  'M' = 1,
+  'mol/L' = 1,
+  'nM' = 10^-9,
+  'nmol/L' = 10^-9,
+  'nmol.L-1' = 10^-9,
+  'pM' = 10^-12,
+  'pmol/L' = 10^-12,
+  'pmol/ml' = 10^-9,
+  'um' = 10^-6,
+  'uM' = 10^-6,
+  'umol/L' = 10^-6,
+  'umol/ml' = 10^-3,
+  'umol/uL' = 1
+) %>%
+  magrittr::multiply_by(10^9)
 
-activities_biochem_1 <- dbGetQuery(con, paste0("select A.doc_id, ACT.activity_id, A.assay_id, ACT.molregno, MOL_DICT.chembl_id as chembl_id_compound, ACT.standard_relation, ACT.standard_type,
-                                             ACT.standard_value,ACT.standard_units,
-                                             A.tid,
-                                             A.description,A.chembl_id as chembl_id_assay, BAO.label, DOCS.chembl_id as chembl_id_doc, DOCS.pubmed_id as pubmed_id
-                                             from activities as ACT
-                                             left join assays as A
-                                             on ACT.assay_id = A.assay_id
-                                             left join DOCS
-                                             on DOCS.doc_id=A.doc_id
-                                             left join bioassay_ontology as BAO
-                                             on A.bao_format=BAO.bao_id
-                                             LEFT JOIN molecule_dictionary AS MOL_DICT
-                                             on ACT.molregno = MOL_DICT.molregno
-                                             WHERE ACT.standard_value is not null
-                                             and A.assay_type = 'B'
-                                             and A.relationship_type in ('D', 'H', 'M', 'U')
-                                             and ACT.standard_units = 'nM'
-                                             and ACT.standard_type in ('IC50','Ki','EC50','Kd','IC90','CC50','ID50','AC50','Inhibition','MIC','Potency','Activity','ED50')
-                                             and A.assay_cell_type is NULL
-                                             and A.bao_format not in ('BAO_0000221', 'BAO_0000219','BAO_0000218')
-                                             "))
-View(activities_biochem_1)
+
+activities_biochem_1 <- dbGetQuery(
+  con,
+  paste0(
+    "select A.doc_id, ACT.activity_id, A.assay_id, ACT.molregno, MOL_DICT.chembl_id as chembl_id_compound, ACT.standard_relation, ACT.standard_type,
+     ACT.standard_value, ACT.standard_units,
+     A.tid,
+     A.description,A.chembl_id as chembl_id_assay, BAO.label, DOCS.chembl_id as chembl_id_doc, DOCS.pubmed_id as pubmed_id
+     from activities as ACT
+     left join assays as A
+     on ACT.assay_id = A.assay_id
+     left join DOCS
+     on DOCS.doc_id=A.doc_id
+     left join bioassay_ontology as BAO
+     on A.bao_format=BAO.bao_id
+     LEFT JOIN molecule_dictionary AS MOL_DICT
+     on ACT.molregno = MOL_DICT.molregno
+     WHERE ACT.standard_value is not null
+     and A.assay_type = 'B'
+     and A.relationship_type in ('D', 'H', 'M', 'U')
+     and A.bao_format not in ('BAO_0000221', 'BAO_0000219','BAO_0000218')
+     and ACT.standard_units in (", paste(paste0("'", names(standard_unit_map), "'"), collapse = ","), ")
+     and ACT.standard_type in ('IC50','Ki','EC50','Kd','IC90','CC50','ID50','AC50','Inhibition','MIC','Potency','Activity','ED50')
+     and A.assay_cell_type is NULL"
+  )
+)
 
 
 
@@ -109,7 +130,13 @@ activities_biochem_2<-dbGetQuery(con, paste0("select A.doc_id, ACT.activity_id, 
 
 activities_biochem <- data.table::rbindlist(
   list(
-    activities_biochem_1,
+    activities_biochem_1 %>%
+      filter(standard_value > 0) %>%
+      mutate(
+        standard_value = standard_value / standard_unit_map[standard_units],
+        # log10_value = log10(standard_value * standard_unit_map[standard_units]),
+        standard_units = "nM"
+      ),
     activities_biochem_2
   )
 )
@@ -139,29 +166,12 @@ fwrite(
 # get phenotypic data all compounds --------------------------------------------
 ###############################################################################T
 
-standard_units_ok <- c('M','mol/L','nM','nmol/L',
-                     'nmol.L-1','pM','pmol/L','pmol/ml','um',
-                     'uM','umol/L','umol/ml','umol/uL')
-
-
 
 # assay_freq<-dbGetQuery(con, paste0(" select assay_id, count(molregno)
 #                                    from activities
 #                                    where standard_units in ('",paste(standard_units_ok,collapse="','"),"')
 #                                    group by assay_id
 #                                    "))
-
-units_per_assay<-dbGetQuery(con, paste0("select assay_id, count(distinct(standard_units)) as count_units,
-                                        count(molregno) as count_molregno
-                                        from activities
-                                        where standard_units in ('",paste(standard_units_ok, collapse="','"),"')
-                                        group by assay_id
-                                        "))
-assays_qualified <- units_per_assay %>%
-  # We only allow a single unit used in each assay to make sure all measurements
-  # within the assay are comparable
-  filter(count_units == 1) %>%
-  filter(count_molregno > 2)
 
 activities_1<-dbGetQuery(con, paste0("select A.doc_id, ACT.activity_id, A.assay_id, ACT.molregno, MOL_DICT.chembl_id as chembl_id_compound, ACT.standard_relation, ACT.standard_type,
                                              ACT.standard_value,ACT.standard_units,
@@ -178,70 +188,17 @@ activities_1<-dbGetQuery(con, paste0("select A.doc_id, ACT.activity_id, A.assay_
                                              on ACT.molregno = MOL_DICT.molregno
                                      where ACT.standard_value is not null
                                      and A.relationship_type like 'N'
-                                     and A.assay_id in (",toString(assays_qualified$assay_id),")
-                                     and ACT.standard_units in ('",paste(standard_units_ok,collapse="','"),"')
-                                     "))
-#
-
-# x <- activities_1 %>%
-#   as.data.table() %>%
-#   .[
-#     ,
-#     if(length(unique(standard_units)) > 1) .SD,
-#     keyby = assay_id
-#   ]
-
-# BAO list is a list of assays that are curated by Nienke to be interpretable
-# https://bioportal.bioontology.org
-# This is to check if we missed any of these assays with the BAO ids listed
-# in the query, result should be empty
-activities_2<-dbGetQuery(con, paste0("select A.doc_id, ACT.activity_id, A.assay_id, ACT.molregno,ACT.standard_relation, ACT.standard_type,
-                                             ACT.standard_value,ACT.standard_units,
-                                             A.tid,
-                                             A.description,A.chembl_id as chembl_id_assay, BAO.label, DOCS.chembl_id as chembl_id_doc
-                                             from activities as ACT
-                                             left join assays as A
-                                             on ACT.assay_id = A.assay_id
-                                             left join DOCS
-                                             on DOCS.doc_id=A.doc_id
-                                             left join bioassay_ontology as BAO
-                                             on A.bao_format=BAO.bao_id
-                                     where ACT.standard_value is not null
-                                     and A.assay_id in (",toString(assays_qualified$assay_id),")
-                                     and A.assay_id not in (",toString(activities_1$assay_id),")
-                                     and ACT.standard_units in ('",paste(standard_units_ok,collapse="','"),"')
-                                     and BAO.label in ('BAO_0000006','BAO_0000090','BAO_0000094','BAO_0000096','BAO_0000218','BAO_0000219','BAO_0000221')
+                                     and ACT.standard_units in (", paste(paste0("'", names(standard_unit_map), "'"), collapse = ","), ")
                                      "))
 
-
-dim(activities_2)
-
-# Normalize all units to nM, saving the factors here
-standard_unit_map <- c(
-  'M' = 10^9,
-  'mol/L' = 10^9,
-  'nM' = 1,
-  'nmol/L' = 1,
-  'nmol.L-1' = 1,
-  'pM' = 10^-3,
-  'pmol/L' = 10^-3,
-  'pmol/ml' = 1,
-  'um' = 10^3,
-  'uM' = 10^3,
-  'umol/L' = 10^3,
-  'umol/ml' = 10^6,
-  'umol/uL' = 10^9
-)
 
 pheno_activities <- activities_1 %>%
   filter(standard_value > 0) %>%
   mutate(
-    standard_value = standard_value * standard_unit_map[standard_units],
-    log10_value = log10(standard_value * standard_unit_map[standard_units]),
+    standard_value = standard_value / standard_unit_map[standard_units],
+    # log10_value = log10(standard_value * standard_unit_map[standard_units]),
     standard_units = "nM"
   ) %>%
-  drop_na(log10_value) %>%
-  filter(standard_units %in% standard_units_ok) %>%
   as_tibble()
 
 fwrite(
