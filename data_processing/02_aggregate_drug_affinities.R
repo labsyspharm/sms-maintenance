@@ -3,210 +3,240 @@ library(data.table)
 library(here)
 library(synapser)
 library(synExtra)
+library(qs)
 
 synLogin()
 syn <- synDownloader(here("tempdl"))
 
-release <- "chembl_v25"
+release <- "chembl_v27"
 dir_release <- here(release)
 syn_release <- synFindEntityId(release, "syn18457321")
 
-# set directories & import files -----------------------------------------------
+
+# Set directories, import files ------------------------------------------------
 ###############################################################################T
 
-chembl_ref_info <- syn("syn21652213") %>%
-  read_csv(col_types = "cccc") %>%
-  mutate(
-    reference_type = factor(reference_type, levels = c("pubmed_id", "doi", "patent_id"))
+inputs <- list(
+  lspci_id_vendor_id_map = c("compounds_processed", "lspci_id_vendor_id_map.csv.gz"),
+  chembl_ref_info = c("raw_data", "chembl", "chembl_ref_info_raw.csv.gz"),
+  chembl_biochemical = c("raw_data", "chembl", "chembl_biochemical_raw.csv.gz"),
+  chembl_phenotypic = c("raw_data", "chembl", "chembl_phenotypic_raw.csv.gz"),
+  chembl_biochemical = c("raw_data", "chembl", "chembl_biochemical_raw.csv.gz")
+) %>%
+  map(~exec(synPluck, !!!c(syn_release, .x))) %>%
+  c(
+    inhouse_dose_response = "syn20692433",
+    inhouse_single_dose = "syn20692432"
   )
 
-chembl_ref_info_best <- chembl_ref_info %>%
-  arrange(reference_type) %>%
-  group_by(chembl_id_doc, doc_type) %>%
-  slice(1) %>%
-  ungroup()
-
-all_cmpds_eq_classes <- syn("syn20830516") %>%
-  read_rds()
-
-biochem_alldata <- syn("syn20693825") %>%
-  read_csv(col_types = "iiiicccdciccccicccccii")
-
-biochem_neat <- all_cmpds_eq_classes %>%
-  mutate(
-    data = map(
-      data,
-      ~biochem_alldata %>%
-        rename(pref_name_target = pref_name) %>%
-        filter(tax_id == 9606, !is.na(entrez_gene_id)) %>%
-        left_join(
-          .x %>%
-            select(id, eq_class),
-          by = c("chembl_id_compound" = "id")
-        )
-    )
+input_data <- inputs %>%
+  map(syn) %>%
+  map(
+    function(x)
+      list(
+        `.csv` = partial(
+          fread,
+          colClasses = c(
+            lspci_id = "integer"
+          )
+        ),
+        `.tsv` = fread,
+        `.rds` = read_rds
+      ) %>%
+      magrittr::extract2(which(str_detect(x, fixed(names(.))))) %>%
+      {.(x)}
   )
 
-doseresponse_inhouse <- syn("syn20692433") %>%
-  read_csv(col_types = "idcccccicccc")
+# Clean up raw ChEMBL data -----------------------------------------------------
+###############################################################################T
 
-doseresponse_inhouse_neat <- all_cmpds_eq_classes %>%
-  mutate(
-    data = map(
-      data,
-      ~doseresponse_inhouse %>%
-        mutate(hms_id = paste0("HMSL", hms_id)) %>%
-        rename(entrez_gene_id = gene_id) %>%
-        left_join(
-          .x %>%
-            select(id, eq_class),
-          by = c("hms_id" = "id")
-        )
-    )
+REFERENCE_PRIORITY <- c(
+  "pubmed_id",
+  "doi",
+  "patent_id",
+  "synapse_id",
+  "chembl_id"
+)
+
+chembl_ref_info_best <- copy(input_data[["chembl_ref_info"]])[
+  ,
+  reference_type := factor(reference_type, levels = REFERENCE_PRIORITY)
+][
+  order(reference_type),
+  .(
+    references = .SD[
+      # Remove DOI if Pubmed ID is present
+      if (any(reference_type == "pubmed_id"))
+        !reference_type == "doi"
+      else
+        TRUE,
+      .(reference_type, reference_id)
+    ] %>%
+      unique() %>%
+      list()
+  ),
+  keyby = .(chembl_id_doc)
+]
+
+biochem_neat <- copy(input_data[["chembl_biochemical"]]) %>%
+  mutate(standard_value = as.numeric(standard_value)) %>%
+  rename(pref_name_target = pref_name) %>%
+  filter(tax_id == 9606, !is.na(entrez_gene_id)) %>%
+  inner_join(
+   copy(input_data[["lspci_id_vendor_id_map"]])[
+     source == "chembl"
+   ][
+     ,
+     source := NULL
+   ],
+   by = c("chembl_id_compound" = "vendor_id")
   )
 
-pheno_data <- syn("syn20693827") %>%
-  read_csv(col_types = "iiiicccdciccccd")
+dose_response_inhouse_neat <- copy(input_data[["inhouse_dose_response"]]) %>%
+  mutate(hms_id = paste0("HMSL", hms_id)) %>%
+  rename(entrez_gene_id = gene_id, hmsl_id = hms_id) %>%
+  inner_join(
+    copy(input_data[["lspci_id_vendor_id_map"]])[
+      source == "hmsl"
+    ][
+      ,
+      source := NULL
+    ],
+    by = c("hmsl_id" = "vendor_id")
+  )
 
-pheno_data_neat <- all_cmpds_eq_classes %>%
-  mutate(
-    data = map(
-      data,
-      ~pheno_data %>%
-        left_join(
-          .x %>%
-            select(id, lspci_id = eq_class),
-          by = c("chembl_id_compound" = "id")
-        )
-    )
+pheno_data_neat <- copy(input_data[["chembl_phenotypic"]]) %>%
+  mutate(standard_value = as.numeric(standard_value)) %>%
+  inner_join(
+    copy(input_data[["lspci_id_vendor_id_map"]])[
+      source == "chembl"
+    ][
+      ,
+      source := NULL
+    ],
+    by = c("chembl_id_compound" = "vendor_id")
   )
 
 # Aggregate dose-response data -------------------------------------------------
 ###############################################################################T
 
 biochem_rowbind <- biochem_neat %>%
-  mutate(
-    data = map(
-      data,
-      ~.x %>%
-        left_join(
-          select(chembl_ref_info_best,  chembl_id_doc, reference_type, reference_id),
-          by = "chembl_id_doc"
-        ) %>%
-        mutate(
-          file_url = paste0("https://www.ebi.ac.uk/chembl/document_report_card/", chembl_id_doc),
-          value = standard_value,
-          value_unit = standard_units,
-          reference_id = if_else(is.na(reference_id), chembl_id_doc, reference_id),
-          reference_type = if_else(is.na(reference_type), "chembl_id", as.character(reference_type)),
-        ) %>%
-        select(
-          lspci_id = eq_class,
-          value, value_unit = standard_units, value_type = standard_type,
-          value_relation = standard_relation, description_assay = description,
-          uniprot_id, entrez_gene_id,
-          reference_id, reference_type, file_url
-        )
-    )
-  )
-
-
-doseresponse_inhouse_rowbind <- doseresponse_inhouse_neat %>%
-  mutate(
-    data = map(
-      data,
-      ~.x %>%
-        mutate(
-          reference_id = synapse_id,
-          reference_type = "synapse_id"
-        ) %>%
-        select(
-          lspci_id = eq_class,
-          value, value_unit, value_type,
-          value_relation, description_assay = description,
-          uniprot_id, entrez_gene_id,
-          reference_id, reference_type, file_url
-        )
-    )
-  )
-
-complete_table <- biochem_rowbind %>%
-  rename(biochem = data) %>%
   left_join(
-    doseresponse_inhouse_rowbind %>%
-      rename(inhouse = data)
+    chembl_ref_info_best,
+    by = "chembl_id_doc"
   ) %>%
   mutate(
-    # Call to distinct important, since some assays can be recorded multiple times
-    # for the same eq_class now, when multiple forms of the same drug where mapped
-    # to the same eq_class and an assay was stored in the db for all forms
-    data = map2(
-      biochem, inhouse,
-      ~bind_rows(.x, .y) %>%
-        distinct() %>%
-        # Remap obsolete entrez_ids
-        # 645840 -> 114112
-        # 348738 -> 6241
-        mutate(entrez_gene_id = recode(entrez_gene_id, `645840` = 114112L, `348738` = 6241L))
+    file_url = paste0("https://www.ebi.ac.uk/chembl/document_report_card/", chembl_id_doc),
+    value = standard_value,
+    value_unit = standard_units,
+    references = map2(
+      references, chembl_id_doc,
+      ~{
+        if (!is.null(.x))
+          .x
+        else
+          data.table(
+            reference_id = .y,
+            reference_type = factor("chembl_id", levels = REFERENCE_PRIORITY)
+          )
+      }
+    )
+  ) %>%
+  select(
+    lspci_id,
+    value, value_unit = standard_units, value_type = standard_type,
+    value_relation = standard_relation, description_assay = description,
+    uniprot_id, entrez_gene_id,
+    references, file_url
+  )
+
+doseresponse_inhouse_rowbind <- input_data[["inhouse_dose_response"]] %>%
+  mutate(
+    hms_id = paste0("HMSL", hms_id)
+  ) %>%
+  inner_join(
+    input_data[["lspci_id_vendor_id_map"]] %>%
+      filter(source == "hmsl") %>%
+      select(lspci_id, vendor_id),
+    by = c("hms_id" = "vendor_id")
+  ) %>%
+  mutate(
+    references = map(
+      synapse_id,
+      ~data.table(
+        reference_id = .x,
+        reference_type = factor("synapse_id", levels = REFERENCE_PRIORITY)
+      )
+    ),
+    reference_id = synapse_id,
+    reference_type = "synapse_id"
+  ) %>%
+  select(
+    lspci_id,
+    value, value_unit, value_type,
+    value_relation, description_assay = description,
+    uniprot_id, entrez_gene_id = gene_id,
+    references, file_url
+  )
+
+biochem_complete <- bind_rows(
+  biochem_rowbind,
+  doseresponse_inhouse_rowbind
+) %>%
+  # Call to distinct important, since some assays can be recorded multiple times
+  # for the same eq_class now, when multiple forms of the same drug where mapped
+  # to the same eq_class and an assay was stored in the db for all forms
+  distinct() %>%
+  # Remap obsolete entrez_ids
+  # 645840 -> 114112
+  # 348738 -> 6241
+  mutate(
+    entrez_gene_id = recode(
+      entrez_gene_id, `645840` = 114112L, `348738` = 6241L
     )
   )
 
-
-
-
-write_rds(
-  complete_table %>%
-    select(fp_name, fp_type, data),
-  file.path(dir_release, "biochemicaldata_complete_inhouse_chembl.rds"),
-  compress = "gz"
+qsave(
+  biochem_complete,
+  file.path(dir_release, "biochemical_data_complete.qs"),
+  preset = "fast"
 )
 
 # Using data.table here for speed
 calculate_q1 <- function(data) {
+  n_groups <- uniqueN(data, by = c("lspci_id", "entrez_gene_id"))
+  pb <- txtProgressBar(min = 1, max = n_groups, style = 3)
+  on.exit(close(pb))
   data %>%
-    as.data.table() %>%
-    {
+    as.data.table() %>% {
       .[
         ,
-        reference_type := recode(
-          reference_type,
-          pubmed_id = "pubmed", patent_id = "patent", chembl_id = "chembl", synapse_id = "synapse"
-        )
-      ][
-        ,
         .(
-          Q1 = round(quantile(value, 0.25, names = FALSE), 2),
+          Q1 = {
+            setTxtProgressBar(pb, .GRP)
+            round(quantile(value, 0.25, names = FALSE), 2)
+          },
           n_measurement = .N,
-          references = .SD[, .(reference_type, reference_id)] %>%
-            unique() %>%
-            with(
-              paste(
-                reference_type,
-                reference_id,
-                sep = ":",
-                collapse = "|"
-              )
-            )
+          references = references %>%
+            rbindlist(use.names = TRUE) %>%
+            unique() %>% {
+              paste(.[["reference_type"]], .[["reference_id"]], sep = ":")
+            } %>%
+            paste(collapse = "|")
         ),
         by = .(lspci_id, entrez_gene_id)
       ]
-    } %>%
-    as_tibble()
+    }
 }
 
-complete_table_Q1 <- complete_table %>%
-  mutate(
-    data = map(
-      data,
-      calculate_q1
-    )
-  )
+biochem_complete_q1 <- biochem_complete %>%
+  setkey(lspci_id, entrez_gene_id) %>%
+  head(n = 10000) %>%
+  calculate_q1()
 
-write_rds(
-  complete_table_Q1 %>%
-    select(fp_name, fp_type, data),
-  file.path(dir_release, "biochemicaldata_complete_inhouse_chembl_Q1.rds"),
-  compress = "gz"
+fwrite(
+  biochem_complete_q1,
+  file.path(dir_release, "biochemical_data_complete_q1.csv.gz")
 )
 
 # Aggregate single-dose data ---------------------------------------------------
