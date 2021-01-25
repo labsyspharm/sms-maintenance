@@ -86,7 +86,7 @@ find_matches <- function(query, targets) {
     bind_rows()
 }
 
-plan(multisession(workers = 8))
+plan(multisession(workers = 4))
 probe_matches <- compound_table %>%
   mutate(
     data = map(
@@ -94,6 +94,11 @@ probe_matches <- compound_table %>%
       ~find_matches(query = probes_canonicalized, targets = .x)
     )
   )
+
+write_rds(
+  probe_matches,
+  file.path(dir_release, "chemical_probe_matches.rds")
+)
 
 probes_table <- probes_raw %>%
   transmute(
