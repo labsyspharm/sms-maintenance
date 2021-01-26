@@ -1,7 +1,7 @@
 library(tidyverse)
 library(vroom)
 library(data.table)
-library(biomaRt)
+# library(biomaRt)
 library(bit64)
 library(here)
 library(synapser)
@@ -37,6 +37,33 @@ download.file(
   file.path(dir_release, "chembl_uniprot_mapping.txt")
 )
 
+uniprot_id_mapping_urls <- c(
+  "Homo sapiens" = "HUMAN_9606_idmapping.dat.gz",
+  "Mus musculus" = "MOUSE_10090_idmapping.dat.gz",
+  "Rattus norvegicus" = "RAT_10116_idmapping.dat.gz"
+) %>% map_chr(
+    ~paste0(
+      "ftp://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/idmapping/by_organism/",
+      .x
+    )
+  )
+
+uniprot_id_mapping_files <- uniprot_id_mapping_urls %>%
+  imap_chr(
+    ~file.path(dir_release, paste0("uniprot_id_mapping_", str_replace_all(.y, fixed(" "), "_"), ".tsv.gz"))
+  )
+
+download.file(
+  uniprot_id_mapping_urls,
+  uniprot_id_mapping_files,
+  method = "libcurl"
+)
+
+download.file(
+  "ftp://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/idmapping/idmapping_selected.tab.gz",
+  file.path(dir_release, "uniprot_id_mapping.tsv.gz")
+)
+
 # step 1 --> import chembl generated file & convert to gene_ID
 
 organism_biomart_mapping <- c(
@@ -52,7 +79,9 @@ allowed_target_types = c(
   "CHIMERIC PROTEIN",
   "PROTEIN COMPLEX",
   "SINGLE PROTEIN",
-  "PROTEIN COMPLEX GROUP"
+  "PROTEIN COMPLEX GROUP",
+  "PROTEIN-PROTEIN INTERACTION",
+  "UNKNOWN"
 )
 
 chembl_info_all_targets <- dbGetQuery(
@@ -63,7 +92,10 @@ chembl_info_all_targets <- dbGetQuery(
   )
 ) %>%
   as_tibble() %>%
-  filter(organism %in% names(organism_biomart_mapping), target_type %in% allowed_target_types)
+  filter(
+    organism %in% names(organism_biomart_mapping),
+    target_type %in% allowed_target_types
+  )
 
 chembl_info_all_targets %>%
   count(chembl_id, target_type) %>%
@@ -81,7 +113,6 @@ map_uniprot_chembl <- read_tsv(
   col_types = "cccc"
 )
 
-
 chembl_map_with_uniprot <- chembl_info_all_targets %>%
   left_join(
     map_uniprot_chembl %>%
@@ -89,83 +120,15 @@ chembl_map_with_uniprot <- chembl_info_all_targets %>%
     by = "chembl_id"
   )
 
-uniprot_to_entrez <- function(df, group) {
-  mart <- useMart(
-    "ENSEMBL_MART_ENSEMBL",
-    organism_biomart_mapping[group$organism]
-  )
-  map_uniprot_geneID <- biomaRt::select(
-    mart, unique(df$uniprot_id),
-    c("uniprot_gn_id", "entrezgene_id"), "uniprot_gn_id"
-  )
-  df <- df %>%
-    left_join(map_uniprot_geneID, by = c("uniprot_id" = "uniprot_gn_id"))
-  if (group$organism == "Homo sapiens") {
-    # https://github.com/datarail/genebabel
-    # Additionally query the genebabel package for human genes
-    df <- df %>%
-      filter(is.na(entrezgene_id)) %>%
-      dplyr::select(-entrezgene_id) %>%
-      genebabel::join_hgnc(
-        query_col = "uniprot_id",
-        match_cols = "uniprot_ids",
-        select_cols = "entrez_id"
-      ) %>%
-      mutate(entrez_id = as.integer(entrez_id)) %>%
-      dplyr::rename(entrezgene_id = entrez_id) %>%
-      bind_rows(filter(df, !is.na(entrezgene_id)))
-  }
-  df
-}
+uniprot_mapping_official <- uniprot_id_mapping_files %>%
+  map(fread, sep = "\t", col.names = c("uniprot_id", "external_db", "external_id")) %>%
+  rbindlist(use.names = TRUE, fill = TRUE, idcol = "organism")
 
-chembl_map_with_entrez <- chembl_map_with_uniprot %>%
-  group_by(organism) %>%
-  group_modify(uniprot_to_entrez) %>%
-  dplyr::rename(entrez_gene_id = entrezgene_id) %>%
-  ungroup()
-
-chembl_map_with_entrez %>%
-  filter(is.na(entrez_gene_id)) %>%
-  dplyr::count(organism)
-# # A tibble: 3 x 2
-# organism              n
-# <chr>             <int>
-#   1 Homo sapiens         14
-# 2 Mus musculus        187
-# 3 Rattus norvegicus   619
-
-# Only 15 human uniprot IDs left without a matching Entrez ID, good enough...
-
-chembl_map_with_entrez %>%
-  drop_na(entrez_gene_id) %>%
-  dplyr::count(entrez_gene_id) %>%
-  dplyr::count(n)
-# # A tibble: 15 x 2
-# n    nn
-# <int> <int>
-#   1     1  4078
-# 2     2   653
-# 3     3   200
-# 4     4    93
-# 5     5    36
-# 6     6    20
-# 7     7    16
-# 8     8     3
-# 9     9     5
-# 10    10     7
-# 11    11     2
-# 12    12     3
-# 13    13     1
-# 14    16     1
-# 15    17     1
-
-# step 4 --> match with gene_info
 
 download.file(
   "ftp://ftp.ncbi.nih.gov/gene/DATA/gene_info.gz",
   file.path(dir_release, "gene_info_20200113.gz")
 )
-
 
 # Using vroom here instead of loading the entire csv because it is downright massive
 # and vroom is much faster
@@ -181,27 +144,119 @@ gene_info <- vroom(
   skip = 1
 )
 
-# 645840 -> 114112
-# 348738 -> 6241
+gene_info_relevant <- gene_info %>%
+  distinct(
+    tax_id, entrez_gene_id, symbol, entrez_symbol, entrez_synonyms, entrez_type_of_gene, entrez_name
+  )
 
-map_chemblID_geneID <- chembl_map_with_entrez %>%
-  # Have to cast as integer64 because the Chembl postgresql DB stores some ids
-  # (tid, tax_id) as 64bit integer
-  mutate_at(vars(tax_id, tid), as.integer) %>%
-  left_join(
-    gene_info,
-    by = c("tax_id", "entrez_gene_id")
+# Using gene symbols now for inital mapping, recovering more than with entrez IDs directly
+
+chembl_map_with_symbol <- chembl_map_with_uniprot %>%
+  inner_join(
+    uniprot_mapping_official %>%
+      filter(external_db == "Gene_Name") %>%
+      transmute(
+        organism,
+        uniprot_id,
+        symbol = external_id
+      ),
+    by = c("organism", "uniprot_id")
   ) %>%
-  # Append all human gene's not already in to cover genes that are not covered
-  # in chembl but only in the LSP single doses etc
+  # Adding entrez_gene_id
+  left_join(
+    gene_info_relevant,
+    by = c("tax_id", "symbol")
+  ) %>%
+  # Add matches from directly mapping to entrez_gene_id
   bind_rows(
-    filter(gene_info, !entrez_gene_id %in% .$entrez_gene_id, tax_id == 9606L) %>%
-      mutate(organism = "Homo sapiens")
+    filter(chembl_map_with_uniprot, !uniprot_id %in% .[["uniprot_id"]]) %>%
+      left_join(
+        uniprot_mapping_official %>%
+          filter(external_db == "GeneID") %>%
+          transmute(
+            organism,
+            uniprot_id,
+            entrez_gene_id = as.integer(external_id)
+          ),
+        by = c("organism", "uniprot_id")
+      ) %>%
+      left_join(
+        gene_info_relevant,
+        by = c("tax_id", "entrez_gene_id")
+      )
   ) %>%
   distinct()
 
 
-write_csv(map_chemblID_geneID, file.path(dir_release, "target_dictionary_wide.csv.gz"))
+chembl_map_with_symbol %>%
+  filter(is.na(entrez_gene_id), is.na(symbol)) %>%
+  dplyr::count(organism)
+# A tibble: 3 x 2
+# organism              n
+# <chr>             <int>
+# 1 Homo sapiens         24
+# 2 Mus musculus          5
+# 3 Rattus norvegicus    16
+
+
+# Only 24 human uniprot IDs left without a matching Entrez ID / Symbol, good enough...
+
+chembl_map_with_symbol %>%
+  drop_na(entrez_gene_id) %>%
+  dplyr::count(entrez_gene_id) %>%
+  dplyr::count(n)
+# A tibble: 17 x 2
+# n    nn
+# <int> <int>
+# 1     1  4737
+# 2     2   792
+# 3     3   237
+# 4     4   110
+# 5     5    67
+# 6     6    27
+# 7     7    14
+# 8     8     9
+# 9     9     8
+# 10    10     7
+# 11    11     2
+# 12    12     4
+# 13    13     2
+# 14    14     2
+# 15    15     1
+# 16    19     1
+# 17    23     1
+
+# step 4 --> match with gene_info
+
+# 645840 -> 114112
+# 348738 -> 6241
+
+map_chemblID_geneID <- chembl_map_with_symbol %>%
+  # Append all human gene's not already in to cover genes that are not covered
+  # in chembl but only in the LSP single doses etc
+  bind_rows(
+    gene_info_relevant %>%
+      filter(
+        !entrez_gene_id %in% chembl_map_with_symbol$entrez_gene_id,
+        !symbol %in% chembl_map_with_symbol$symbol,
+        tax_id == 9606L,
+        entrez_type_of_gene == "protein-coding"
+      ) %>%
+      mutate(
+        organism = "Homo sapiens",
+        pref_name = entrez_name,
+        target_type = "SINGLE PROTEIN"
+      )
+      # left_join(
+      #   uniprot_mapping_official %>%
+      #     filter(external_db == "GeneID") %>%
+      #     transmute(organism, uniprot_id, entrez_gene_id = as.integer(external_id)),
+      #   by = c("organism", "entrez_gene_id")
+      # )
+  ) %>%
+  distinct()
+
+fwrite(map_chemblID_geneID, file.path(dir_release, "target_dictionary_wide.csv.gz"))
 
 # map_chemblID_geneID <- syn("syn20693721") %>% read_csv()
 
