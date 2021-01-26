@@ -1,11 +1,9 @@
 library(tidyverse)
-library(furrr)
 library(data.table)
 library(here)
 library(synapser)
 library(synExtra)
 library(igraph)
-library(parallel)
 library(qs)
 
 synLogin()
@@ -26,6 +24,7 @@ inputs <- c(
   hmsl_raw = synPluck(syn_release, "raw_data", "hmsl_compounds_raw.rds"),
   emolecules_suppliers = synPluck(syn_release, "id_mapping", "emolecules", "suppliers.tsv.gz"),
   emolecules_vendor_info = synPluck(syn_release, "id_mapping", "emolecules", "emolecules_vendor_info.csv.gz"),
+  chembl_emolecules_map = synPluck(syn_release, "id_mapping", "unichem", "chembl_emolecules_mapping.csv.gz"),
   old_sms = "syn21094266"
 )
 
@@ -98,6 +97,8 @@ fwrite(
   file.path(dir_release, "inchi_id_compound_name_map.csv.gz")
 )
 
+# cmpd_names <- fread(file.path(dir_release, "inchi_id_compound_name_map.csv.gz"))
+
 # Map HMSL by name -------------------------------------------------------------
 ###############################################################################T
 
@@ -164,6 +165,30 @@ identity_combined <- merge(
     all = TRUE
   )
 
+# Making Unichem ChEMBL -> emolecules map
+
+emolecule_matches <- copy(input_data[["chembl_emolecules_map"]])[
+  input_data[["inchi_id_vendor_map"]][
+    source == "chembl",
+    .(
+      chembl_id = vendor_id,
+      inchi_id_chembl = inchi_id
+    )
+  ],
+  on = "chembl_id",
+  nomatch = NULL
+][
+  input_data[["inchi_id_vendor_map"]][
+    source == "emolecules",
+    .(
+      external_id = as.integer(vendor_id),
+      inchi_id_emolecules = inchi_id
+    )
+  ],
+  on = "external_id",
+  nomatch = NULL
+]
+
 # In the graph connect all inchi_ids that share the same fingerprint and mass
 identity_graph <- identity_combined[
   ,
@@ -200,6 +225,13 @@ identity_graph <- identity_combined[
         inchi_id_1 = inchi_id.x,
         inchi_id_2 = inchi_id.y,
         identity_type = "hmsl_name_match"
+      ),
+    emolecule_matches %>%
+      filter(inchi_id_chembl != inchi_id_emolecules) %>%
+      transmute(
+        inchi_id_1 = inchi_id_chembl,
+        inchi_id_2 = inchi_id_emolecules,
+        identity_type = "unichem_chembl_emolecules_match"
       )
   )
 

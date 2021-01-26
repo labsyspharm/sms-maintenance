@@ -2,6 +2,8 @@ library(tidyverse)
 library(here)
 library(synapser)
 library(synExtra)
+library(qs)
+library(data.table)
 library(vroom)
 
 synLogin()
@@ -18,7 +20,7 @@ dir.create(dir_unichem, showWarnings = FALSE)
 # Download Unichem xref tables -------------------------------------------------
 ###############################################################################T
 
-unichem_ftp <- "ftp://ftp.ebi.ac.uk/pub/databases/chembl/UniChem/data/oracleDumps/UDRI321/"
+unichem_ftp <- "ftp://ftp.ebi.ac.uk/pub/databases/chembl/UniChem/data/oracleDumps/UDRI335"
 
 download.file(
   file.path(unichem_ftp, "UC_SOURCE.txt.gz"),
@@ -96,22 +98,16 @@ uci_chembl_mappings <- uci_xref_nested %>%
     )
   )
 
-write_rds(
-  uci_xref_nested,
-  file.path(dir_unichem, "unichem_xrefs.rds"),
-  compress = "gz"
-)
-
-write_rds(
+qsave(
   uci_chembl_mappings,
-  file.path(dir_unichem, "chembl_xref_mappings.rds"),
-  compress = "gz"
+  file.path(dir_unichem, "chembl_xref_mappings.qs"),
+  preset = "fast"
 )
 
 pwalk(
   uci_chembl_mappings,
   function(src_name, data, ...) {
-    write_csv(
+    fwrite(
       data,
       file.path(dir_unichem, paste0("chembl_", src_name, "_mapping.csv.gz"))
     )
@@ -150,7 +146,6 @@ syn_unichem <- synMkdir(syn_release, "id_mapping", "unichem")
 
 c(
   Sys.glob(file.path(dir_unichem, "chembl_*_mapping.csv.gz")),
-  file.path(dir_unichem, "chembl_xref_mappings.rds"),
-  file.path(dir_unichem, "unichem_xrefs.rds")
+  file.path(dir_unichem, "chembl_xref_mappings.qs")
 )  %>%
   synStoreMany(parentId = syn_unichem, activity = unichem_wrangling_activity)

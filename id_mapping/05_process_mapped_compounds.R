@@ -1,5 +1,4 @@
 library(tidyverse)
-library(furrr)
 library(data.table)
 library(bit64)
 library(here)
@@ -112,12 +111,12 @@ fwrite(
 )
 # canonical_members_ranked <- fread(file.path(dir_release, "lspci_id_canonical_members_ranked.csv.gz"))
 
-
+canonical_members <- canonical_members_ranked[
+  rank == 1L
+]
 
 fwrite(
-  canonical_members_ranked[
-    rank == 1L
-  ],
+  canonical_members,
   file.path(dir_release, "lspci_id_canonical_members.csv.gz")
 )
 
@@ -152,6 +151,8 @@ fwrite(
   all_names_ranked,
   file.path(dir_release, "lspci_id_compound_compound_names_ranked.csv.gz")
 )
+
+# all_names_ranked <- fread(file.path(dir_release, "lspci_id_compound_compound_names_ranked.csv.gz"))
 
 canonical_names <- all_names_ranked[
   name_rank == 1L
@@ -214,20 +215,30 @@ approval_table <- copy(canonical_members_ranked)[
 # Create table of canonical compounds ------------------------------------------
 ###############################################################################T
 
-compound_dictionary <- canonical_members_ranked[
+pb <- txtProgressBar(
+  max = uniqueN(canonical_members_ranked[["lspci_id"]]),
+  style = 3
+)
+compound_dictionary <- copy(canonical_members_ranked)[
+  rank == 1L
+][
+  ,
   c(
-    list(
-      inchi_id = head(inchi_id, n = 1)
-    ),
+    {
+      setTxtProgressBar(pb, .GRP)
+      list(
+        inchi_id = head(inchi_id, n = 1)
+      )
+    },
     vendor_id[
-      match(NAME_VENDOR_RANKING, source)
+      match(VENDOR_RANKING, source)
     ] %>%
-      set_names(NAME_VENDOR_RANKING)
+      set_names(paste0(VENDOR_RANKING, "_id"))
   ),
   keyby = "lspci_id"
 ][
   ,
-  commercially_available := !is.na(emolecules)
+  commercially_available := !is.na(emolecules_id)
 ] %>%
   merge(
     input_data[["inchis"]],
@@ -250,6 +261,7 @@ compound_dictionary <- canonical_members_ranked[
     by = "lspci_id",
     all.x = TRUE
   )
+close(pb)
 
 fwrite(
   compound_dictionary,
@@ -261,7 +273,7 @@ fwrite(
 # Create map of vendor IDs to lspci_ids ----------------------------------------
 ###############################################################################T
 
-inchi_id_vendor_id_map <- merge(
+lspci_id_vendor_id_map <- merge(
   input_data[["inchi_id_lspci_id_map"]][
     , .(lspci_id, inchi_id)
   ] %>%
@@ -277,7 +289,7 @@ inchi_id_vendor_id_map <- merge(
   setkey(lspci_id, source)
 
 fwrite(
-  inchi_id_vendor_id_map,
+  lspci_id_vendor_id_map,
   file.path(dir_release, "lspci_id_vendor_id_map.csv.gz")
 )
 
