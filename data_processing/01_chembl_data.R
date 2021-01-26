@@ -86,7 +86,7 @@ activities_biochem_1 <- dbGetQuery(
     "select A.doc_id, ACT.activity_id, A.assay_id, ACT.molregno, MOL_DICT.chembl_id as chembl_id_compound, ACT.standard_relation, ACT.standard_type,
      ACT.standard_value, ACT.standard_units,
      A.tid,
-     A.description,A.chembl_id as chembl_id_assay, BAO.label, DOCS.chembl_id as chembl_id_doc, DOCS.pubmed_id as pubmed_id
+     A.description,A.chembl_id as chembl_id_assay, BAO.label, DOCS.chembl_id as chembl_id_doc, DOCS.pubmed_id as pubmed_id, TARGET_DICT.organism AS organism
      from activities as ACT
      left join assays as A
      on ACT.assay_id = A.assay_id
@@ -96,7 +96,10 @@ activities_biochem_1 <- dbGetQuery(
      on A.bao_format=BAO.bao_id
      LEFT JOIN molecule_dictionary AS MOL_DICT
      on ACT.molregno = MOL_DICT.molregno
+     LEFT JOIN target_dictionary AS TARGET_DICT
+     on A.tid = TARGET_DICT.tid
      WHERE ACT.standard_value is not null
+     AND TARGET_DICT.organism in ('Homo sapiens', 'Rattus norvegicus', 'Mus musculus')
      and A.assay_type = 'B'
      and A.relationship_type in ('D', 'H', 'M', 'U')
      and A.bao_format not in ('BAO_0000221', 'BAO_0000219','BAO_0000218')
@@ -113,7 +116,7 @@ activities_biochem_1 <- dbGetQuery(
 activities_biochem_2<-dbGetQuery(con, paste0("select A.doc_id, ACT.activity_id, A.assay_id, ACT.molregno, MOL_DICT.chembl_id as chembl_id_compound, ACT.standard_relation, ACT.standard_type,
                                              ACT.standard_value,ACT.standard_units,
                                              A.tid,
-                                             A.description,A.chembl_id as chembl_id_assay, BAO.label, DOCS.chembl_id as chembl_id_doc, DOCS.pubmed_id as pubmed_id
+                                             A.description,A.chembl_id as chembl_id_assay, BAO.label, DOCS.chembl_id as chembl_id_doc, DOCS.pubmed_id as pubmed_id, TARGET_DICT.organism AS organism
                                              from activities as ACT
                                              left join assays as A
                                              on ACT.assay_id = A.assay_id
@@ -123,7 +126,10 @@ activities_biochem_2<-dbGetQuery(con, paste0("select A.doc_id, ACT.activity_id, 
                                              on A.bao_format=BAO.bao_id
                                              LEFT JOIN molecule_dictionary AS MOL_DICT
                                              on ACT.molregno = MOL_DICT.molregno
+                                             LEFT JOIN target_dictionary AS TARGET_DICT
+                                             ON A.tid = TARGET_DICT.tid
                                              WHERE ACT.standard_value is not null
+                                             AND TARGET_DICT.organism in ('Homo sapiens', 'Rattus norvegicus', 'Mus musculus')
                                              and A.assay_type = 'F'
                                              and A.description like '%Navigating the Kinome%'
                                              "))
@@ -141,22 +147,36 @@ activities_biochem <- data.table::rbindlist(
   )
 )
 
-activities_biochem_geneid <- activities_biochem %>%
-  left_join(
-    input_data[["target_dictionary"]] %>%
-      distinct(
-        tid,
-        chembl_id_target = chembl_id,
-        target_type,
-        pref_name,
-        uniprot_id,
-        entrez_symbol,
-        entrez_gene_id,
-        tax_id
-      ) %>%
-      mutate_at(vars(tid), as.integer64),
-    by = "tid"
+target_dict_relevant <- input_data[["target_dictionary"]] %>%
+  mutate(
+    symbol = if_else(
+      (symbol == "-" | is.na(symbol)) &
+        entrez_symbol != "-" &
+        !is.na(entrez_symbol),
+      entrez_symbol,
+      symbol
+    )
+  ) %>%
+  distinct(
+    tid,
+    chembl_id_target = chembl_id,
+    target_type,
+    pref_name,
+    uniprot_id,
+    symbol,
+    entrez_gene_id,
+    tax_id,
+    organism
   )
+
+activities_biochem_geneid <- activities_biochem %>%
+  # Only two targets are not present in dictionary, both are DNA. Not relevant
+  inner_join(
+    target_dict_relevant %>%
+      mutate_at(vars(tid), as.integer64),
+    by = c("organism", "tid")
+  )
+
 
 fwrite(
   activities_biochem_geneid,
@@ -176,7 +196,7 @@ fwrite(
 activities_1<-dbGetQuery(con, paste0("select A.doc_id, ACT.activity_id, A.assay_id, ACT.molregno, MOL_DICT.chembl_id as chembl_id_compound, ACT.standard_relation, ACT.standard_type,
                                              ACT.standard_value,ACT.standard_units,
                                              A.tid,
-                                             A.description,A.chembl_id as chembl_id_assay, BAO.label, DOCS.chembl_id as chembl_id_doc
+                                             A.description,A.chembl_id as chembl_id_assay, BAO.label, DOCS.chembl_id as chembl_id_doc, TARGET_DICT.organism AS organism
                                              from activities as ACT
                                              left join assays as A
                                              on ACT.assay_id = A.assay_id
@@ -186,6 +206,8 @@ activities_1<-dbGetQuery(con, paste0("select A.doc_id, ACT.activity_id, A.assay_
                                              on A.bao_format=BAO.bao_id
                                              LEFT JOIN molecule_dictionary AS MOL_DICT
                                              on ACT.molregno = MOL_DICT.molregno
+                                             LEFT JOIN target_dictionary AS TARGET_DICT
+                                             ON A.tid = TARGET_DICT.tid
                                      where ACT.standard_value is not null
                                      and A.relationship_type like 'N'
                                      and ACT.standard_units in (", paste(paste0("'", names(standard_unit_map), "'"), collapse = ","), ")
@@ -198,8 +220,7 @@ pheno_activities <- activities_1 %>%
     standard_value = standard_value / standard_unit_map[standard_units],
     # log10_value = log10(standard_value * standard_unit_map[standard_units]),
     standard_units = "nM"
-  ) %>%
-  as_tibble()
+  )
 
 fwrite(
   pheno_activities,
