@@ -57,17 +57,17 @@ VENDOR_RANKING <- c(
 )
 
 canonical_members_ranked <- input_data[["inchi_id_lspci_id_map"]] %>%
-  left_join(
+  merge(
     input_data[["inchi_id_vendor_map"]],
+    all.x = TRUE,
     by = "inchi_id"
   ) %>%
-  left_join(
+  merge(
     input_data[["chembl_raw"]] %>%
       select(chembl_id, molregno, parent_molregno, n_assays, parental_flag, max_phase),
+    all.x = TRUE,
     by = c("vendor_id" = "chembl_id")
-  ) %>%
-  setDT() %>%
-  copy() %>% {
+  ) %>% {
     .[
       ,
       `:=`(
@@ -168,23 +168,27 @@ fwrite(
 
 canonical_inchis_ranked <- copy(canonical_members_ranked)[
   ,
-  source := factor(source, levels = VENDOR_RANKING)
-][
-  ,
-  {
-    inchi_ids <- unique(inchi_id)
-    ranks <- seq_along(inchi_ids)
-    list(
-      inchi_id = inchi_ids,
-      rank = ranks
-    )
-  },
-  keyby = .(lspci_id, source)
-][
-  input_data[["inchis"]],
-  on = "inchi_id"
+  .(
+    lspci_id,
+    inchi_id,
+    source = factor(source, levels = VENDOR_RANKING),
+    rank
+  )
 ] %>%
-  setkey(lspci_id, source, rank)
+  setkey(lspci_id, source) %>%
+  unique(
+    by = c("lspci_id", "inchi_id")
+  ) %>% {
+    .[
+      ,
+      rank := seq_len(.N),
+      by = .(lspci_id)
+    ][
+      input_data[["inchis"]],
+      on = "inchi_id"
+    ]
+  } %>%
+    setkey(lspci_id, source, rank)
 
 fwrite(
   canonical_inchis_ranked,
@@ -211,6 +215,11 @@ approval_table <- copy(canonical_members_ranked)[
   keyby = "lspci_id"
 ]
 
+fwrite(
+  approval_table,
+  file.path(dir_release, "lspci_id_max_approval.csv.gz")
+)
+
 
 # Create table of canonical compounds ------------------------------------------
 ###############################################################################T
@@ -220,29 +229,28 @@ pb <- txtProgressBar(
   style = 3
 )
 compound_dictionary <- copy(canonical_members_ranked)[
-  rank == 1L
-][
   ,
-  c(
-    {
-      setTxtProgressBar(pb, .GRP)
-      list(
-        inchi_id = head(inchi_id, n = 1)
-      )
-    },
+  {
+    setTxtProgressBar(pb, .GRP)
     vendor_id[
       match(VENDOR_RANKING, source)
     ] %>%
-      set_names(paste0(VENDOR_RANKING, "_id"))
-  ),
+      set_names(paste0(VENDOR_RANKING, "_id")) %>%
+      as.list()
+  },
   keyby = "lspci_id"
 ][
   ,
   commercially_available := !is.na(emolecules_id)
 ] %>%
   merge(
-    input_data[["inchis"]],
-    by = "inchi_id",
+    canonical_inchis_ranked[
+      rank == 1L,
+      .(
+        lspci_id, inchi_id, canonical_inchi
+      )
+    ],
+    by = "lspci_id",
     all.x = TRUE
   ) %>%
   merge(
