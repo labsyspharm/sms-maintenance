@@ -270,7 +270,7 @@ fwrite(
 
 fetch_chembl_activity <- Activity(
   name = "Fetch ChEMBL actitivy data",
-  used = "syn20693721",
+  used = unname(inputs),
   executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/data_processing/01_chembl_data.R"
 )
 
