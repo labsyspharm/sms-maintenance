@@ -14,10 +14,16 @@ syn_release <- synFindEntityId(release, "syn18457321")
 # Loading files ----------------------------------------------------------------
 ###############################################################################T
 
-inputs <- list(
-  hmsl_doseresponse_20 = "syn20692433",
-  hmsl_doseresponse_21 = "syn24210560"
-)
+inputs <- inputs <- list(
+  target_dictionary = synPluck(syn_release, "id_mapping", "target_dictionary_wide.csv.gz"),
+  lspci_id_vendor_id_map = synPluck(syn_release, "compounds_processed", "lspci_id_vendor_id_map.csv.gz")
+) %>%
+  c(
+    hmsl_doseresponse_20 = "syn20692433",
+    hmsl_doseresponse_21 = "syn24210560",
+    inhouse_single_dose = "syn20692432"
+  )
+
 
 input_data <- inputs %>%
   map(syn) %>%
@@ -65,23 +71,57 @@ doseresponse <- input_data[["hmsl_doseresponse_20"]] %>%
         synapse_id = "syn24210560",
         file_url = "https://www.synapse.org/#!Synapse:syn24210560"
       ) %>%
-      genebabel::join_hgnc(
-        "symbol", c("symbol", "alias_symbol"), c("uniprot_ids", "name", "entrez_id")
-      ) %>%
-      rename(
-        uniprot_id = uniprot_ids,
-        description = name,
-        gene_id = entrez_id
-      ) %>%
-      mutate(
-        gene_id = as.integer(gene_id)
-      ) %>%
-      unchop(uniprot_id)
+      inner_join(
+        input_data[["target_dictionary"]][
+          ,
+          .(
+            symbol,
+            entrez_gene_id,
+            uniprot_id,
+            description = pref_name
+          )
+        ],
+        by = "symbol"
+      )
   )
 
 fwrite(
   doseresponse,
   here(release, "hmsl_doseresponse.csv.gz")
+)
+
+single_dose <- input_data[["inhouse_single_dose"]] %>%
+  mutate(
+    hmsl_id = if_else(
+      str_starts(hms_id, fixed("HMSL")),
+      hms_id,
+      paste0("HMSL", hms_id)
+    )
+  ) %>%
+  select(-hms_id) %>%
+  inner_join(
+    input_data[["lspci_id_vendor_id_map"]][
+      source == "hmsl",
+      .(lspci_id, hmsl_id = vendor_id)
+    ],
+    by = "hmsl_id"
+  ) %>%
+  rename(symbol = gene_symbol) %>%
+  inner_join(
+    input_data[["target_dictionary"]][
+      ,
+      .(
+        symbol,
+        entrez_gene_id,
+        uniprot_id
+      )
+    ],
+    by = "symbol"
+  )
+
+fwrite(
+  single_dose,
+  here(release, "hmsl_singledose.csv.gz")
 )
 
 # Store to synapse -------------------------------------------------------------
@@ -96,7 +136,8 @@ hmsl_activity <- Activity(
 syn_id_mapping <- synMkdir(syn_release, "raw_data", "hmsl")
 
 c(
-  here(release, "hmsl_doseresponse.csv.gz")
+  here(release, "hmsl_doseresponse.csv.gz"),
+  here(release, "hmsl_singledose.csv.gz")
 ) %>%
   synStoreMany(parent = syn_id_mapping, activity = hmsl_activity)
 
