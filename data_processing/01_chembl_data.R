@@ -1,6 +1,7 @@
 library(tidyverse)
 library(vroom)
 library(data.table)
+library(qs)
 library(biomaRt)
 library(bit64)
 library(RPostgres)
@@ -258,11 +259,51 @@ doc_info_long <- doc_info %>%
   as_tibble() %>%
   dplyr::select(chembl_id_doc, doc_type, pubmed_id, doi, patent_id) %>%
   mutate_at(vars(pubmed_id, doi, patent_id), as.character) %>%
-  gather("reference_type", "reference_id", pubmed_id, doi, patent_id, na.rm = TRUE)
+  gather("reference_type", "reference_id", pubmed_id, doi, patent_id, na.rm = TRUE) %>%
+  # Add ChEMBL doc ID if nothing else is present
+  bind_rows(
+    doc_info %>%
+      filter(!chembl_id_doc %in% .[["chembl_doc_id"]]) %>%
+      transmute(
+        chembl_id_doc,
+        doc_type = "CHEMBL_DOC",
+        reference_type = "chembl_id",
+        reference_id = chembl_id_doc
+      )
+  )
 
 fwrite(
   doc_info_long,
   file.path(dir_release, "chembl_ref_info_raw.csv.gz")
+)
+
+# wrangle best reference source ------------------------------------------------
+###############################################################################T
+
+REFERENCE_PRIORITY <- c(
+  "pubmed_id",
+  "doi",
+  "patent_id",
+  "synapse_id",
+  "chembl_id",
+  "hmsl_id"
+)
+
+chembl_ref_info_best <- as.data.table(doc_info_long)[
+  ,
+  reference_type := factor(reference_type, levels = REFERENCE_PRIORITY)
+][
+  order(reference_type),
+  .(
+    reference_type = reference_type[1],
+    reference_id = reference_id[1]
+  ),
+  keyby = .(chembl_id_doc)
+]
+
+fwrite(
+  chembl_ref_info_best,
+  file.path(dir_release, "chembl_ref_info_best_source.csv.gz")
 )
 
 # Store to synapse -------------------------------------------------------------
@@ -280,7 +321,7 @@ c(
   file.path(dir_release, "chembl_biochemical_raw.csv.gz"),
   file.path(dir_release, "chembl_phenotypic_raw.csv.gz"),
   file.path(dir_release, "chembl_ref_info_raw.csv.gz"),
-  file.path(dir_release, "chembl_approval_info_raw.csv.gz")
-
+  file.path(dir_release, "chembl_approval_info_raw.csv.gz"),
+  file.path(dir_release, "chembl_ref_info_best_source.csv.gz")
 ) %>%
   synStoreMany(parent = chembl_raw_syn, activity = fetch_chembl_activity)

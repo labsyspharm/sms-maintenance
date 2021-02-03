@@ -18,7 +18,6 @@ syn_release <- synFindEntityId(release, "syn18457321")
 
 inputs <- list(
   lspci_id_vendor_id_map = c("compounds_processed", "lspci_id_vendor_id_map.csv.gz"),
-  chembl_ref_info = c("raw_data", "chembl", "chembl_ref_info_raw.csv.gz"),
   chembl_biochemical = c("raw_data", "chembl", "chembl_biochemical_raw.csv.gz"),
   chembl_phenotypic = c("raw_data", "chembl", "chembl_phenotypic_raw.csv.gz"),
   chembl_biochemical = c("raw_data", "chembl", "chembl_biochemical_raw.csv.gz"),
@@ -48,34 +47,6 @@ input_data <- inputs %>%
 
 # Clean up raw ChEMBL data -----------------------------------------------------
 ###############################################################################T
-
-REFERENCE_PRIORITY <- c(
-  "pubmed_id",
-  "doi",
-  "patent_id",
-  "synapse_id",
-  "chembl_id"
-)
-
-chembl_ref_info_best <- copy(input_data[["chembl_ref_info"]])[
-  ,
-  reference_type := factor(reference_type, levels = REFERENCE_PRIORITY)
-][
-  order(reference_type),
-  .(
-    references = .SD[
-      # Remove DOI if Pubmed ID is present
-      if (any(reference_type == "pubmed_id"))
-        !reference_type == "doi"
-      else
-        TRUE,
-      .(reference_type, reference_id)
-    ] %>%
-      unique() %>%
-      list()
-  ),
-  keyby = .(chembl_id_doc)
-]
 
 biochem_neat <- copy(input_data[["chembl_biochemical"]]) %>%
   mutate(standard_value = as.numeric(standard_value)) %>%
@@ -121,12 +92,7 @@ pheno_data_neat <- copy(input_data[["chembl_phenotypic"]]) %>%
 ###############################################################################T
 
 biochem_rowbind <- biochem_neat %>%
-  left_join(
-    chembl_ref_info_best,
-    by = "chembl_id_doc"
-  ) %>%
   mutate(
-    file_url = paste0("https://www.ebi.ac.uk/chembl/document_report_card/", chembl_id_doc),
     value = standard_value,
     value_unit = standard_units,
     references = map2(
@@ -140,14 +106,16 @@ biochem_rowbind <- biochem_neat %>%
             reference_type = factor("chembl_id", levels = REFERENCE_PRIORITY)
           )
       }
-    )
+    ),
+    source = "chembl",
+    source_id = chembl_id_assay
   ) %>%
   select(
     lspci_id,
     value, value_unit = standard_units, value_type = standard_type,
     value_relation = standard_relation, description_assay = description,
     uniprot_id, entrez_gene_id, symbol,
-    references, file_url
+    references, source, source_id
   )
 
 doseresponse_inhouse_rowbind <- dose_response_inhouse_neat %>%
