@@ -51,6 +51,7 @@ doseresponse <- input_data[["hmsl_doseresponse_20"]] %>%
       paste0("HMSL", hmsl_id)
     )
   ) %>%
+  rename(entrez_gene_id = gene_id) %>%
   bind_rows(
     input_data[["hmsl_doseresponse_21"]] %>%
       # Remove compounds where no assay was available
@@ -83,7 +84,12 @@ doseresponse <- input_data[["hmsl_doseresponse_20"]] %>%
         ],
         by = "symbol"
       )
-  )
+  ) %>%
+  mutate(
+    reference_id = synapse_id,
+    reference_type = "synapse_id"
+  ) %>%
+  distinct()
 
 fwrite(
   doseresponse,
@@ -117,7 +123,16 @@ single_dose <- input_data[["inhouse_single_dose"]] %>%
       )
     ],
     by = "symbol"
-  )
+  ) %>%
+  mutate(
+    reference_type = if_else(
+      str_starts(url, fixed("http://lincs.hms.harvard.edu")),
+      "lincs_id",
+      "synapse_id"
+    ),
+    reference_id = source_assay_id
+  ) %>%
+  distinct()
 
 fwrite(
   single_dose,
