@@ -10,75 +10,83 @@ library(synExtra)
 synLogin()
 syn <- synDownloader(here("tempdl"))
 
-release <- "chembl_v25"
+release <- "chembl_v27"
 dir_release <- here(release)
 syn_release <- synFindEntityId(release, "syn18457321")
 
-# set directories & import files -----------------------------------------------
+# Set directories, import files ------------------------------------------------
 ###############################################################################T
 
-complete_dose_response_Q1 <- syn("syn20830834") %>%
-  read_rds()
-
-complete_single_dose_Q1 <- syn("syn20830836") %>%
-  read_rds()
-
-cmpd_eq_classes <- syn("syn20830516") %>%
-  read_rds()
-
-literature_annotations_raw <- syn("syn20694521") %>%
-  read_csv(col_types = "ii___________________") %>%
-  mutate(hms_id = paste0("HMSL", hms_id))
-
-gene_map <- syn("syn20693721") %>%
-  read_csv(col_types = "cicicccicccccc")
-
-compound_map <- syn("syn20835543") %>%
-  read_rds()
-
-# Checking if all target/compound combinations are unique
-complete_dose_response_Q1 %>%
-  unnest(data) %>%
-  count(fp_name, fp_type, lspci_id, entrez_gene_id) %>%
-  count(n)
-# # A tibble: 1 x 2
-# n      nn
-# <int>   <int>
-#   1     1 2672949
-
-complete_single_dose_Q1 %>%
-  unnest(data) %>%
-  count(fp_name, fp_type, lspci_id, entrez_gene_id, cmpd_conc_nM) %>%
-  count(n)
-# # A tibble: 1 x 2
-# n     nn
-# <int>  <int>
-#   1     1 196194
-
-
-literature_annotations <- cmpd_eq_classes %>%
-  mutate(
-    data = map(
-      data,
-      ~literature_annotations_raw %>%
-        left_join(
-          .x %>%
-            select(eq_class, id),
-          by = c("hms_id" = "id")
-        ) %>%
-        select(lspci_id = eq_class, entrez_gene_id = gene_id) %>%
-        mutate(
-          tas = 2L,
-          evidence = "manual_curation",
-          references = "synapse:syn20694521"
-        ) %>%
-        # There are some duplicates in the literature annotation file
-        # plus, in one case, two HMSL ids map to the same eq_class
-        distinct()
+inputs <- c(
+  "dose_response",
+  "single_dose",
+  "phenotypic"
+) %>%
+  interaction(
+    c(
+      "_measurements.csv.gz",
+      "_q1.csv.gz",
+      "_q1_references.csv.gz",
+      "_q1_measurements.csv.gz"
+    ),
+    sep = ""
+  ) %>%
+  levels() %>%
+  set_names(
+    str_replace(., fixed(".csv.gz"), "")
+  ) %>%
+  map(~c("aggregate_data", .x)) %>%
+  c(
+    list(
+      lspci_id_vendor_id_map = c("compounds_processed", "lspci_id_vendor_id_map.csv.gz")
     )
+  ) %>%
+    map(~exec(synPluck, !!!c(syn_release, .x))) %>%
+    c(
+      literature_annotations = "syn20694521"
+    )
+
+input_data <- inputs %>%
+  map(syn) %>%
+  map(
+    function(x)
+      list(
+        `.csv` = partial(
+          fread,
+          colClasses = c(
+            lspci_id = "integer"
+          )
+        ),
+        `.tsv` = fread,
+        `.rds` = read_rds
+      ) %>%
+      magrittr::extract2(which(str_detect(x, fixed(names(.))))) %>%
+      {.(x)}
   )
 
+# Wrangle literature annotations -----------------------------------------------
+###############################################################################T
 
+literature_annotations <- input_data[["literature_annotations"]] %>%
+  mutate(
+    hmsl_id = paste0("HMSL", hms_id)
+  ) %>%
+  inner_join(
+    input_data[["lspci_id_vendor_id_map"]][
+      source == "hmsl",
+      .(lspci_id, hmsl_id = vendor_id)
+    ],
+    by = c("hmsl_id")
+  ) %>%
+  select(lspci_id, entrez_gene_id = gene_id, symbol = gene_symbol) %>%
+  mutate(
+    tas = 2L,
+    evidence = "manual_curation",
+    references = "synapse:syn20694521"
+  ) %>%
+  # There are some duplicates in the literature annotation file
+  # plus, in one case, two HMSL ids map to the same eq_class
+  distinct()
 
 # calculate TAS ----------------------------------------------------------------
 ###############################################################################T
@@ -88,256 +96,114 @@ sigfig <- function(vec, n = 3){
   as.numeric(gsub("\\.$", "", formatC(signif(vec, digits = n), digits = n,format = "fg", flag = "#")))
 }
 
-complete_table_tas <- complete_dose_response_Q1 %>%
+dose_response_tas <- input_data[["dose_response_q1"]] %>%
   mutate(
-    data = map(
-      data,
-      ~.x %>%
-        mutate(
-          tas = case_when(
-            Q1 < 100 ~ 1L,
-            Q1 < 1000 ~ 2L,
-            Q1 < 10000 ~ 3L,
-            Q1 >= 10000 ~ 10L,
-            TRUE ~ NA_integer_
-          ),
-          unit = "nM",
-          measurement = as.numeric(sigfig(Q1))
-        )
-    )
+    Q1 = as.numeric(Q1),
+    tas = case_when(
+      Q1 < 100 ~ 1L,
+      Q1 < 1000 ~ 2L,
+      Q1 < 10000 ~ 3L,
+      Q1 >= 10000 ~ 10L,
+      TRUE ~ NA_integer_
+    ),
+    unit = "nM",
+    measurement = as.numeric(sigfig(Q1)),
+    tas_id = seq_len(n())
   )
 
-
-hmsl_kinomescan_tas <- complete_single_dose_Q1 %>%
+single_dose_tas <- input_data[["single_dose_q1"]] %>%
   mutate(
-    data = map(
-      data,
-      ~.x %>%
-        mutate(
-        tas = case_when(
-          cmpd_conc_nM == 10000 & percent_control_Q1 >= 75 ~ 10L,
-          cmpd_conc_nM == 10000 & percent_control_Q1 < 0.1 ~ 2L,
-          cmpd_conc_nM == 1000 & percent_control_Q1 >= 90 ~ 10L,
-          cmpd_conc_nM == 1000 & percent_control_Q1 < 1 ~ 2L,
-          cmpd_conc_nM == 100 & percent_control_Q1 >= 75 ~ 10L,
-          cmpd_conc_nM == 100 & percent_control_Q1 < 25 ~ 2L,
-          TRUE ~ NA_integer_
-        ),
-        entrez_gene_id = as.integer(entrez_gene_id)
-      )
+    tas = case_when(
+      cmpd_conc_nM == 10000 & percent_control_Q1 >= 75 ~ 10L,
+      cmpd_conc_nM == 10000 & percent_control_Q1 < 0.1 ~ 2L,
+      cmpd_conc_nM == 1000 & percent_control_Q1 >= 90 ~ 10L,
+      cmpd_conc_nM == 1000 & percent_control_Q1 < 1 ~ 2L,
+      cmpd_conc_nM == 100 & percent_control_Q1 >= 75 ~ 10L,
+      cmpd_conc_nM == 100 & percent_control_Q1 < 25 ~ 2L,
+      TRUE ~ NA_integer_
     )
   )
 
 
 # Check for contradicting TAS at different compound concentrations
-hmsl_kinomescan_tas %>%
-  unnest(data) %>%
-  as.data.table() %>%
-  .[
+single_dose_tas[
     ,
-    .(n = length(unique(na.omit(tas))) > 1),
-    by = .(fp_name, fp_type, lspci_id, entrez_gene_id)
-  ] %>%
-  .[
-    ,
-    sum(n),
-    by = .(fp_name, fp_type)
-  ]
-# fp_name     fp_type V1
-# 1:      morgan_chiral      morgan 42
-# 2:      morgan_normal      morgan 42
-# 3: topological_normal topological 42
+    .(n = length(unique(na.omit(tas)))),
+    by = .(lspci_id, entrez_gene_id)
+  ][n > 1]
+
+# 43 cases
 # Thre are a few cases where there is contradicting info.
 # In this case, take the minimum TAS. According to Nienke false positives
 # are less likely than false negatives so this seems like the prudent approach.
 
-
-hmsl_kinomescan_tas_agg <- hmsl_kinomescan_tas %>%
-  mutate(
-    data = map(
-      data,
-      ~.x %>%
-        drop_na(tas) %>%
-        as.data.table() %>%
-        .[
-          order(tas),
-          .SD[
-            tas == tas[1],
-            .(
-              tas = tas[1],
-              references = str_split(references, fixed("|")) %>%
-                unlist() %>%
-                unique() %>%
-                paste(collapse = "|"),
-              unit = paste0("% at ", cmpd_conc_nM, " nM"),
-              measurement = as.numeric(sigfig(percent_control_Q1))
-            )
-          ],
-          by = .(lspci_id, entrez_gene_id)
-        ] %>%
-        as_tibble()
+single_dose_tas_agg <- single_dose_tas[
+  order(tas, cmpd_conc_nM),
+  .SD[
+    tas == tas[1],
+    .(
+      tas,
+      unit = paste0("% at ", cmpd_conc_nM, " nM"),
+      measurement = as.numeric(sigfig(percent_control_Q1)),
+      cmpd_conc_nM
     )
-  )
+  ],
+  by = .(lspci_id, entrez_gene_id)
+][
+  ,
+  tas_id := .GRP,
+  by = .(lspci_id, entrez_gene_id)
+]
 
-combined_q1 <- complete_table_tas %>%
-  rename(dose_response_assay = data) %>%
-  full_join(
-    hmsl_kinomescan_tas_agg %>%
-      rename(single_dose_assay = data)
-  ) %>%
-  full_join(
-    literature_annotations %>%
-      rename(manual_curation = data)
-  ) %>%
-  mutate(
-    data = pmap(
-      list(
-        dose_response_assay = dose_response_assay,
-        single_dose_assay = single_dose_assay,
-        manual_curation = manual_curation
-      ),
-      function(...) {
-        args <- list(...)
-        bind_rows(args, .id = "source") %>%
-          select(lspci_id, entrez_gene_id, source, tas, measurement, unit, references)
-      }
-    )
-  ) %>%
-  select(fp_name, fp_type, data)
+combined_tas <- rbindlist(
+  list(
+    dose_response = dose_response_tas,
+    single_dose = single_dose_tas_agg,
+    literature_annotation = copy(literature_annotations)[
+      ,
+      tas_id := seq_len(.N)
+    ]
+  ),
+  idcol = "source",
+  use.names = TRUE,
+  fill = TRUE
+)[
+  ,
+  .(lspci_id, entrez_gene_id, symbol, tas, unit, measurement, n_measurement, source, tas_id)
+] %>%
+  unique()
+
+TAS_SOURCE_ORDER <- c(
+  "dose_response",
+  "single_dose",
+  "literature_annotation"
+)
 
 # Prefer results from full affinity measuremennts over the percent inhibition
 # When incorporating Verena's manual annotatations, prefer affinity data.
 # If affinity data not present, take minimum of of Verena + percent control
-combined_q1_agg <- combined_q1 %>%
-  mutate(
-    data = map(
-      data,
-      ~.x %>%
-        arrange(
-          fct_collapse(source, single_dose_literature = c("single_dose_assay", "manual_curation")) %>%
-            fct_relevel("dose_response_assay"),
-          tas
-        ) %>%
-        group_by(
-          lspci_id, entrez_gene_id
-        ) %>%
-        slice(1) %>%
-        ungroup() %>%
-        arrange(lspci_id, entrez_gene_id)
-    )
+combined_tas_agg <- copy(combined_tas)[
+  ,
+  `:=`(
+    source_collapsed = factor(
+      source,
+      TAS_SOURCE_ORDER
+    ) %>%
+      fct_collapse(single_dose_literature = c("single_dose", "literature_annotation")) %>%
+      fct_relevel("dose_response")
   )
+][
+  order(source_collapsed, tas),
+  .SD[1],
+  keyby = .(lspci_id, entrez_gene_id, symbol)
+][
+  ,
+  source_collapsed := NULL
+]
 
+# TAS measurement and reference mapping ----------------------------------------
+###############################################################################T
 
-tas_vector <- combined_q1_agg %>%
-  mutate(
-    data = map(
-      data,
-      ~.x %>%
-        select(lspci_id, entrez_gene_id, tas)
-    )
-  )
-
-
-# Using vroom here instead of loading the entire csv because it is downright massive
-# and vroom is much faster
-gene_info <- vroom(
-  file.path(dir_release, "gene_info_20190829.gz"),
-  delim = "\t",
-  col_names = c(
-    "tax_id", "entrez_gene_id", "entrez_symbol", "locus_tag", "entrez_synonyms", "db_xrefs", "chromosome",
-    "map_location", "entrez_description", "entrez_type_of_gene", "symbol", "entrez_name", "nomenclature_status",
-    "other_designations", "modification_date", "feature_type"
-  ),
-  col_types = "iic_c___cccc____",
-  skip = 1
-)
-
-tas_vector_annotated <- tas_vector %>%
-  left_join(
-    compound_map %>%
-      rename(compound_map = data)
-  ) %>%
-  mutate(
-    data = map2(
-      data, compound_map,
-      ~.x %>%
-        left_join(
-          .y %>%
-            select(lspci_id, chembl_id, hms_id, pref_name),
-          by = "lspci_id"
-        ) %>%
-        left_join(
-          gene_info,
-          by = "entrez_gene_id"
-        )
-    )
-  ) %>%
-  select(fp_name, fp_type, data)
-
-
-tas_vector_annotated_long <- tas_vector %>%
-  left_join(
-    cmpd_eq_classes %>%
-      rename(cmpd_eq_classes = data)
-  ) %>%
-  mutate(
-    data = map2(
-      data, cmpd_eq_classes,
-      ~.x %>%
-        left_join(
-          .y %>%
-            select(compound_id = id, lspci_id = eq_class),
-          by = "lspci_id"
-        )%>%
-        left_join(
-          gene_info %>%
-            select(entrez_gene_id, entrez_symbol),
-          by = "entrez_gene_id"
-        ) %>%
-        mutate(
-          entrez_symbol = if_else(!is.na(entrez_symbol), entrez_symbol, as.character(entrez_gene_id))
-        ) %>%
-        select(
-          lspci_id,
-          compound_id,
-          entrez_gene_id,
-          entrez_symbol,
-          starts_with("tas")
-        )
-    )
-  ) %>%
-  select(fp_name, fp_type, data)
-
-
-write_rds(
-  combined_q1_agg,
-  file.path(dir_release, "tas_vector_sources.rds"),
-  compress = "gz"
-)
-
-write_rds(
-  tas_vector,
-  file.path(dir_release, "tas_vector.rds"),
-  compress = "gz"
-)
-
-write_rds(
-  tas_vector_annotated,
-  file.path(dir_release, "tas_vector_annotated.rds"),
-  compress = "gz"
-)
-
-write_rds(
-  tas_vector_annotated_long,
-  file.path(dir_release, "tas_vector_annotated_long.rds"),
-  compress = "gz"
-)
-
-write_csv(
-  tas_vector_annotated_long %>%
-    unnest(data),
-  file.path(dir_release, "tas_vector_annotated_long.csv.gz"),
-)
 
 # Store to synapse -------------------------------------------------------------
 ###############################################################################T
