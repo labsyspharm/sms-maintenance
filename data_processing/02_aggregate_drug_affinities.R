@@ -224,6 +224,7 @@ hmsl_kinomescan_q1_refs <- single_dose_data[
     lspci_id,
     entrez_gene_id,
     symbol,
+    cmpd_conc_nM,
     reference_type,
     reference_id
   )
@@ -237,6 +238,7 @@ hmsl_kinomescan_q1_measurements <- single_dose_data[
     lspci_id,
     entrez_gene_id,
     symbol,
+    cmpd_conc_nM,
     measurement_source,
     measurement_id
   )
