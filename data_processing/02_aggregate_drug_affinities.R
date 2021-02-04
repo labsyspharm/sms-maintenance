@@ -147,7 +147,7 @@ biochem_complete_q1 <- biochem_complete[
   by = .(lspci_id, entrez_gene_id, symbol)
 ]
 
-biochem_complete_q1_refs <- biochem_complete_q1_input[
+biochem_complete_q1_refs <- biochem_complete[
   ,
   .(
     lspci_id,
@@ -160,7 +160,7 @@ biochem_complete_q1_refs <- biochem_complete_q1_input[
   setkey() %>%
   unique()
 
-biochem_complete_q1_measurements <- biochem_complete_q1_input[
+biochem_complete_q1_measurements <- biochem_complete[
   ,
   .(
     lspci_id,
