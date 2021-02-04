@@ -86,12 +86,12 @@ biochem_rowbind <- biochem_neat %>%
   ) %>%
   transmute(
     lspci_id,
+    entrez_gene_id, symbol,
     value = standard_value,
     value_unit = standard_units,
     value_type = standard_type,
     value_relation = standard_relation,
     description_assay = description,
-    uniprot_id, entrez_gene_id, symbol,
     reference_type, reference_id,
     measurement_source = "chembl_activity",
     external_measurement_id = as.character(activity_id)
@@ -100,9 +100,9 @@ biochem_rowbind <- biochem_neat %>%
 doseresponse_inhouse_rowbind <- dose_response_inhouse_neat %>%
   transmute(
     lspci_id,
+    entrez_gene_id, symbol,
     value, value_unit, value_type,
     value_relation, description_assay = description,
-    uniprot_id, entrez_gene_id, symbol,
     reference_type, reference_id,
     measurement_source = "inhouse_doseresponse",
     external_measurement_id = synapse_id
@@ -134,66 +134,59 @@ fwrite(
   file.path(dir_release, "dose_response_measurements.csv.gz")
 )
 
-# Using data.table here for speed
-calculate_q1 <- function(data) {
-  n_groups <- uniqueN(data, by = c("lspci_id", "entrez_gene_id"))
-  pb <- txtProgressBar(min = 1, max = n_groups, style = 3)
-  on.exit(close(pb))
-  data[
-    , {
-      setTxtProgressBar(pb, .GRP)
-      reference_df <- data.table(
-        reference_type = reference_type,
-        reference_id = reference_id
-      ) %>%
-        unique()
-      .(
-        Q1 = round(quantile(value, 0.25, names = FALSE), 2),
-        n_measurement = .N,
-        reference_df = list(reference_df),
-        references = reference_df %>% {
-          paste(.[["reference_type"]], .[["reference_id"]], sep = ":")
-        } %>%
-          paste(collapse = "|"),
-        measurements = data.table(
-          measurement_source = measurement_source,
-          external_measurement_id = external_measurement_id,
-          measurement_id = measurement_id
-        ) %>%
-          unique() %>%
-          list()
-      )
-    },
-    by = .(lspci_id, aggregate_column, aggregate_value)
-  ]
-}
+# biochem_complete <- fread(file.path(dir_release, "dose_response_measurements.csv.gz"))
 
-biochem_complete_q1 <- biochem_complete %>%
-  mutate(
-    aggregate_column = if_else(
-      !is.na(entrez_gene_id) | is.na(symbol) | symbol == "-",
-      "entrez_gene_id",
-      "symbol"
-    ),
-    aggregate_value = if_else(
-      aggregate_column == "entrez_gene_id",
-      as.character(entrez_gene_id),
-      symbol
-    )
-  ) %>%
-  setkey(lspci_id, aggregate_column, aggregate_value) %>%
-  calculate_q1()
+# Using data.table here for speed
+
+biochem_complete_q1 <- biochem_complete[
+  ,
+  .(
+    Q1 = round(quantile(value, 0.25, names = FALSE), 2),
+    n_measurement = .N
+  ),
+  by = .(lspci_id, entrez_gene_id, symbol)
+]
+
+biochem_complete_q1_refs <- biochem_complete_q1_input[
+  ,
+  .(
+    lspci_id,
+    entrez_gene_id,
+    symbol,
+    reference_type,
+    reference_id
+  )
+] %>%
+  setkey() %>%
+  unique()
+
+biochem_complete_q1_measurements <- biochem_complete_q1_input[
+  ,
+  .(
+    lspci_id,
+    entrez_gene_id,
+    symbol,
+    measurement_source,
+    external_measurement_id,
+    measurement_id
+  )
+] %>%
+  setkey() %>%
+  unique()
 
 fwrite(
-  biochem_complete_q1 %>%
-    select(-reference_df, -measurements),
+  biochem_complete_q1,
   file.path(dir_release, "dose_response_q1.csv.gz")
 )
 
-qsave(
-  biochem_complete_q1,
-  file.path(dir_release, "dose_response_q1.qs"),
-  preset = "fast"
+fwrite(
+  biochem_complete_q1_refs,
+  file.path(dir_release, "dose_response_q1_references.csv.gz")
+)
+
+fwrite(
+  biochem_complete_q1_measurements,
+  file.path(dir_release, "dose_response_q1_measurements.csv.gz")
 )
 
 # Aggregate single-dose data ---------------------------------------------------
@@ -201,7 +194,7 @@ qsave(
 
 single_dose_data <- input_data[["inhouse_single_dose"]] %>%
   distinct(
-    lspci_id, entrez_gene_id, cmpd_conc_nM,
+    lspci_id, entrez_gene_id, symbol, cmpd_conc_nM,
     percent_control, reference_type, reference_id
   ) %>%
   mutate(
@@ -216,55 +209,55 @@ fwrite(
 
 # Also calculate Q1 values for kinomescan data from HMS LINCS for which no
 # complete dose response curve is available
+hmsl_kinomescan_q1 <- single_dose_data[
+  ,
+  .(
+    percent_control_Q1 = round(quantile(percent_control, 0.25, names = FALSE), 2),
+    n_measurement = .N
+  ),
+  by = .(lspci_id, entrez_gene_id, symbol, cmpd_conc_nM)
+]
 
-hmsl_kinomescan_q1_func <- function(data) {
-    n_groups <- uniqueN(data, by = c("lspci_id", "entrez_gene_id", "cmpd_conc_nM"))
-    pb <- txtProgressBar(min = 1, max = n_groups, style = 3)
-    on.exit(close(pb))
-    setDT(data)
-    data[
-      , {
-        setTxtProgressBar(pb, .GRP)
-        reference_df <- data.table(
-          reference_type = reference_type,
-          reference_id = reference_id
-        ) %>%
-          unique()
-        .(
-          percent_control_Q1 = round(quantile(percent_control, 0.25, names = FALSE), 2),
-          n_measurement = .N,
-          reference_df = list(reference_df),
-          references = reference_df %>% {
-            paste(.[["reference_type"]], .[["reference_id"]], sep = ":")
-          } %>%
-            paste(collapse = "|"),
-          measurements = data.table(
-            measurement_source = measurement_source,
-            measurement_id = measurement_id
-          ) %>%
-            unique() %>%
-            list()
-        )
-      },
-      by = .(lspci_id, entrez_gene_id, cmpd_conc_nM)
-    ]
-  }
+hmsl_kinomescan_q1_refs <- single_dose_data[
+  ,
+  .(
+    lspci_id,
+    entrez_gene_id,
+    symbol,
+    reference_type,
+    reference_id
+  )
+] %>%
+  setkey() %>%
+  unique()
 
-hmsl_kinomescan_q1 <- single_dose_data %>%
-  hmsl_kinomescan_q1_func()
+hmsl_kinomescan_q1_measurements <- single_dose_data[
+  ,
+  .(
+    lspci_id,
+    entrez_gene_id,
+    symbol,
+    measurement_source,
+    measurement_id
+  )
+] %>%
+  setkey() %>%
+  unique()
 
 fwrite(
-  hmsl_kinomescan_q1 %>%
-    select(-reference_df, -measurements),
+  hmsl_kinomescan_q1,
   file.path(dir_release, "single_dose_q1.csv.gz")
 )
 
-qsave(
-  hmsl_kinomescan_q1,
-  file.path(dir_release, "single_dose_q1.qs"),
-  preset = "fast"
+fwrite(
+  hmsl_kinomescan_q1_refs,
+  file.path(dir_release, "single_dose_q1_references.csv.gz")
 )
 
+fwrite(
+  hmsl_kinomescan_q1_measurements,
+  file.path(dir_release, "single_dose_q1_measurements.csv.gz")
+)
 
 # Aggregate phenotypic data ----------------------------------------------------
 ###############################################################################T
@@ -303,44 +296,8 @@ pheno_data_neat <- input_data[["chembl_phenotypic"]] %>%
 
 fwrite(
   pheno_data_neat,
-  file.path(dir_release, "pheno_measurements.csv.gz")
+  file.path(dir_release, "phenotypic_measurements.csv.gz")
 )
-
-pheno_data_q1 <- pheno_data_neat %>%
-  setDT() %>%
-  {
-    n_groups <- uniqueN(., by = c("lspci_id", "assay_id"))
-    pb <- txtProgressBar(min = 1, max = n_groups, style = 3)
-    .[
-      , {
-        setTxtProgressBar(pb, .GRP)
-        reference_df <- data.table(
-          reference_type = reference_type,
-          reference_id = reference_id
-        ) %>%
-          unique()
-        .(
-          value_Q1 = round(quantile(value, 0.25, names = FALSE), 2),
-          n_measurement = .N,
-          reference_df = list(reference_df),
-          references =  paste(
-            reference_df[["reference_type"]],
-            reference_df[["reference_id"]],
-            sep = ":"
-          ) %>%
-            paste(collapse = "|"),
-          measurements = data.table(
-            measurement_source = measurement_source,
-            external_measurement_id = external_measurement_id,
-            measurement_id = measurement_id
-          ) %>%
-            unique() %>%
-            list()
-        )
-      },
-      by = .(lspci_id, assay_id)
-    ]
-  }
 
 pheno_data_q1 <- pheno_data_neat %>%
   setDT() %>%
@@ -365,57 +322,39 @@ pheno_data_q1_refs <- pheno_data_neat[
     lspci_id,
     assay_id,
     reference_type,
-    reference_id,
+    reference_id
+  )
+] %>%
+  setkey() %>%
+  unique()
+
+pheno_data_q1_measurements <- pheno_data_neat[
+  ,
+  .(
+    lspci_id,
+    assay_id,
     measurement_source,
     external_measurement_id,
     measurement_id
   )
 ] %>%
   setkey() %>%
-  unique() %>% {
-    references <- .[
-      ,
-      .(
-        lspci_id,
-        assay_id,
-        reference_type,
-        reference_id
-      )
-    ][
-      ,
-      .(reference_df = list(.SD)),
-      by = .(
-        lspci_id,
-        assay_id
-      )
-    ]
-    measurements <- .[
-      ,
-      .(
-        lspci_id,
-        assay_id,
-        measurement_source,
-        external_measurement_id,
-        measurement_id
-      )
-    ][
-      ,
-      .(measurement_df = list(.SD)),
-      by = .(
-        lspci_id,
-        assay_id
-      )
-    ]
-    references[
-      measurements
-    ]
-  }
-
+  unique()
 
 
 fwrite(
   pheno_data_q1,
-  file.path(dir_release, "pheno_data_q1.csv.gz")
+  file.path(dir_release, "phenotypic_q1.csv.gz")
+)
+
+fwrite(
+  pheno_data_q1_refs,
+  file.path(dir_release, "phenotypic_q1_references.csv.gz")
+)
+
+fwrite(
+  pheno_data_q1_measurements,
+  file.path(dir_release, "phenotypic_q1_measurements.csv.gz")
 )
 
 # Store to synapse -------------------------------------------------------------
@@ -430,8 +369,19 @@ aggregation_activity <- Activity(
 syn_aggregate <- synMkdir(syn_release, "aggregate_data")
 
 c(
-  file.path(dir_release, "biochemical_data_complete_q1.csv.gz"),
-  file.path(dir_release, "inhouse_single_dose_data_complete_q1.csv.gz"),
-  file.path(dir_release, "pheno_data_q1.csv.gz")
+  "dose_response",
+  "single_dose",
+  "phenotypic"
 ) %>%
+  interaction(
+    c(
+      "_measurements.csv.gz",
+      "_q1.csv.gz",
+      "_q1_references.csv.gz",
+      "_q1_measurements.csv.gz"
+    ),
+    sep = ""
+  ) %>%
+  levels() %>%
+  {file.path(dir_release, .)} %>%
   synStoreMany(parent = syn_aggregate, activity = aggregation_activity)
