@@ -24,9 +24,7 @@ inputs <- c(
 ) %>%
   interaction(
     c(
-      "_measurements.csv.gz",
       "_q1.csv.gz",
-      "_q1_references.csv.gz",
       "_q1_measurements.csv.gz"
     ),
     sep = ""
@@ -38,13 +36,10 @@ inputs <- c(
   map(~c("aggregate_data", .x)) %>%
   c(
     list(
-      lspci_id_vendor_id_map = c("compounds_processed", "lspci_id_vendor_id_map.csv.gz")
+      literature_annotations = c("raw_data", "literature_annotations", "literature_annotations.csv.gz")
     )
   ) %>%
-    map(~exec(synPluck, !!!c(syn_release, .x))) %>%
-    c(
-      literature_annotations = "syn20694521"
-    )
+    map(~exec(synPluck, !!!c(syn_release, .x)))
 
 input_data <- inputs %>%
   map(syn) %>%
@@ -63,30 +58,6 @@ input_data <- inputs %>%
       magrittr::extract2(which(str_detect(x, fixed(names(.))))) %>%
       {.(x)}
   )
-
-# Wrangle literature annotations -----------------------------------------------
-###############################################################################T
-
-literature_annotations <- input_data[["literature_annotations"]] %>%
-  mutate(
-    hmsl_id = paste0("HMSL", hms_id)
-  ) %>%
-  inner_join(
-    input_data[["lspci_id_vendor_id_map"]][
-      source == "hmsl",
-      .(lspci_id, hmsl_id = vendor_id)
-    ],
-    by = c("hmsl_id")
-  ) %>%
-  select(lspci_id, entrez_gene_id = gene_id, symbol = gene_symbol) %>%
-  mutate(
-    tas = 2L,
-    evidence = "manual_curation",
-    references = "synapse:syn20694521"
-  ) %>%
-  # There are some duplicates in the literature annotation file
-  # plus, in one case, two HMSL ids map to the same eq_class
-  distinct()
 
 # calculate TAS ----------------------------------------------------------------
 ###############################################################################T
@@ -108,7 +79,7 @@ dose_response_tas <- input_data[["dose_response_q1"]] %>%
     ),
     unit = "nM",
     measurement = as.numeric(sigfig(Q1)),
-    tas_id = seq_len(n())
+    temp_tas_id = seq_len(n())
   )
 
 single_dose_tas <- input_data[["single_dose_q1"]] %>%
@@ -151,7 +122,7 @@ single_dose_tas_agg <- single_dose_tas[
   by = .(lspci_id, entrez_gene_id)
 ][
   ,
-  tas_id := .GRP,
+  temp_tas_id := .GRP,
   by = .(lspci_id, entrez_gene_id)
 ]
 
@@ -159,9 +130,9 @@ combined_tas <- rbindlist(
   list(
     dose_response = dose_response_tas,
     single_dose = single_dose_tas_agg,
-    literature_annotation = copy(literature_annotations)[
+    literature_annotation = copy(input_data[["literature_annotations"]])[
       ,
-      tas_id := seq_len(.N)
+      temp_tas_id := seq_len(.N)
     ]
   ),
   idcol = "source",
@@ -169,7 +140,7 @@ combined_tas <- rbindlist(
   fill = TRUE
 )[
   ,
-  .(lspci_id, entrez_gene_id, symbol, tas, unit, measurement, n_measurement, source, tas_id)
+  .(lspci_id, entrez_gene_id, symbol, tas, unit, measurement, n_measurement, source, temp_tas_id)
 ] %>%
   unique()
 
@@ -198,38 +169,79 @@ combined_tas_agg <- copy(combined_tas)[
   keyby = .(lspci_id, entrez_gene_id, symbol)
 ][
   ,
-  source_collapsed := NULL
+  `:=`(
+    source_collapsed = NULL,
+    tas_id = seq_len(.N)
+  )
 ]
+
+fwrite(
+  combined_tas_agg[
+    ,
+    .(
+      tas_id, lspci_id, entrez_gene_id, symbol, tas, unit, measurement, n_measurement, source
+    )
+  ],
+  file.path(dir_release, "tas_vector.csv.gz")
+)
 
 # TAS measurement and reference mapping ----------------------------------------
 ###############################################################################T
 
+all_q1_measurements <-   c(
+  dose_response = "dose_response_q1_measurements",
+  single_dose = "single_dose_q1_measurements",
+  literature_annotation = "literature_annotations"
+) %>%
+  map(~input_data[[.x]]) %>%
+  rbindlist(fill = TRUE, idcol = "source")
+
+tas_measurement_map <- merge(
+  combined_tas_agg,
+  single_dose_tas_agg[
+    ,
+    .(
+      temp_tas_id,
+      cmpd_conc_nM,
+      source = "single_dose"
+    )
+  ],
+  by = c("temp_tas_id", "source"),
+  all.x = TRUE
+) %>%
+  merge(
+    all_q1_measurements[
+      ,
+      .(measurement_id, cmpd_conc_nM, source, lspci_id, entrez_gene_id)
+    ],
+    by = c("lspci_id", "entrez_gene_id", "cmpd_conc_nM", "source"),
+    all.x = TRUE
+  ) %>% {
+    .[
+      ,
+      .(source, tas_id, measurement_id)
+    ]
+  } %>%
+  unique()
+
+fwrite(
+  tas_measurement_map,
+  file.path(dir_release, "tas_measurement_map.csv.gz")
+)
 
 # Store to synapse -------------------------------------------------------------
 ###############################################################################T
 
 tas_activity <- Activity(
   name = "Calculate target affinity spectrum (TAS) vectors",
-  used = c(
-    "syn20830834",
-    "syn20830836",
-    "syn20830516",
-    "syn20694521",
-    "syn20693721",
-    "syn20835543"
-  ),
+  used = unname(inputs),
   executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/data_processing/03_calculate_tas_vectors.R"
 )
 
-syn_tas_folder <- Folder("tas", parent = syn_release) %>%
-  synStore() %>%
-  chuck("properties", "id")
+syn_tas_folder <- synMkdir(syn_release, "tas")
 
 c(
-  file.path(dir_release, "tas_vector_sources.rds"),
-  file.path(dir_release, "tas_vector.rds"),
-  file.path(dir_release, "tas_vector_annotated.rds"),
-  file.path(dir_release, "tas_vector_annotated_long.rds"),
-  file.path(dir_release, "tas_vector_annotated_long.csv.gz")
+  file.path(dir_release, "tas_vector.csv.gz"),
+  file.path(dir_release, "tas_measurement_map.csv.gz")
 ) %>%
   synStoreMany(parentId = syn_tas_folder, activity = tas_activity)
