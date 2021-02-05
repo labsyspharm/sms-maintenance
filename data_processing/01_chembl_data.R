@@ -249,27 +249,39 @@ fwrite(
 # get document data ------------------------------------------------------------
 ###############################################################################T
 
+REFERENCE_PRIORITY <- c(
+  "pubmed_id" = "https://pubmed.ncbi.nlm.nih.gov/",
+  "doi" = "http://doi.org/",
+  "patent_id" = "https://patents.google.com/?q=",
+  "synapse_id" = "https://www.synapse.org/#!Synapse:",
+  "chembl_id" = "https://www.ebi.ac.uk/chembl/document_report_card/",
+  "hmsl_id" = "https://lincs.hms.harvard.edu/db/datasets/"
+)
+
+
 doc_info <- dbGetQuery(
   con,
-  "SELECT chembl_id AS chembl_id_doc, title, doc_type, pubmed_id, doi, patent_id
+  "SELECT chembl_id AS chembl_id_doc, title, pubmed_id, doi, patent_id
   FROM docs"
 )
 
 doc_info_long <- doc_info %>%
   as_tibble() %>%
-  dplyr::select(chembl_id_doc, doc_type, pubmed_id, doi, patent_id) %>%
+  dplyr::select(chembl_id_doc, pubmed_id, doi, patent_id) %>%
   mutate_at(vars(pubmed_id, doi, patent_id), as.character) %>%
-  gather("reference_type", "reference_id", pubmed_id, doi, patent_id, na.rm = TRUE) %>%
+  gather("reference_type", "reference_value", pubmed_id, doi, patent_id, na.rm = TRUE) %>%
   # Add ChEMBL doc ID if nothing else is present
   bind_rows(
     doc_info %>%
       filter(!chembl_id_doc %in% .[["chembl_doc_id"]]) %>%
       transmute(
         chembl_id_doc,
-        doc_type = "CHEMBL_DOC",
         reference_type = "chembl_id",
-        reference_id = chembl_id_doc
+        reference_value = chembl_id_doc
       )
+  ) %>%
+  mutate(
+    url = paste0(REFERENCE_PRIORITY[reference_type], reference_value)
   )
 
 fwrite(
@@ -277,26 +289,33 @@ fwrite(
   file.path(dir_release, "chembl_ref_info_raw.csv.gz")
 )
 
+syn_reference_table <- synPluck(syn_release, "reference_table")
+
+current_references <- synTableQuery(sprintf("SELECT * FROM %s", syn_reference_table)) %>%
+  as.data.frame()
+
+synStore(
+  Table(
+    syn_reference_table,
+    anti_join(
+      doc_info_long,
+      current_references,
+      by = c("reference_type", "reference_value")
+    )
+  )
+)
+
 # wrangle best reference source ------------------------------------------------
 ###############################################################################T
 
-REFERENCE_PRIORITY <- c(
-  "pubmed_id",
-  "doi",
-  "patent_id",
-  "synapse_id",
-  "chembl_id",
-  "hmsl_id"
-)
-
 chembl_ref_info_best <- as.data.table(doc_info_long)[
   ,
-  reference_type := factor(reference_type, levels = REFERENCE_PRIORITY)
+  reference_type := factor(reference_type, levels = names(REFERENCE_PRIORITY))
 ][
   order(reference_type),
   .(
     reference_type = reference_type[1],
-    reference_id = reference_id[1]
+    reference_value = reference_value[1]
   ),
   keyby = .(chembl_id_doc)
 ]

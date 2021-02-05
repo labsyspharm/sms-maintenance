@@ -86,7 +86,7 @@ doseresponse <- input_data[["hmsl_doseresponse_20"]] %>%
       )
   ) %>%
   mutate(
-    reference_id = synapse_id,
+    reference_value = synapse_id,
     reference_type = "synapse_id"
   ) %>%
   distinct()
@@ -127,16 +127,55 @@ single_dose <- input_data[["inhouse_single_dose"]] %>%
   mutate(
     reference_type = if_else(
       str_starts(url, fixed("http://lincs.hms.harvard.edu")),
-      "lincs_id",
+      "hmsl_id",
       "synapse_id"
     ),
-    reference_id = source_assay_id
+    reference_value = source_assay_id
   ) %>%
   distinct()
 
 fwrite(
   single_dose,
   here(release, "hmsl_singledose.csv.gz")
+)
+
+# Storing references -----------------------------------------------------------
+###############################################################################T
+
+REFERENCE_PRIORITY <- c(
+  "pubmed_id" = "https://pubmed.ncbi.nlm.nih.gov/",
+  "doi" = "http://doi.org/",
+  "patent_id" = "https://patents.google.com/?q=",
+  "synapse_id" = "https://www.synapse.org/#!Synapse:",
+  "chembl_id" = "https://www.ebi.ac.uk/chembl/document_report_card/",
+  "hmsl_id" = "https://lincs.hms.harvard.edu/db/datasets/"
+)
+
+syn_reference_table <- synPluck(syn_release, "reference_table")
+
+current_references <- synTableQuery(sprintf("SELECT * FROM %s", syn_reference_table)) %>%
+  as.data.frame()
+
+new_references <- bind_rows(
+  doseresponse,
+  single_dose
+) %>%
+  anti_join(
+    current_references,
+    by = c("reference_type", "reference_value")
+  ) %>%
+  transmute(
+    reference_type,
+    reference_value,
+    url = paste0(REFERENCE_PRIORITY[reference_type], reference_value)
+  ) %>%
+  distinct()
+
+synStore(
+  Table(
+    syn_reference_table,
+    new_references
+  )
 )
 
 # Store to synapse -------------------------------------------------------------
