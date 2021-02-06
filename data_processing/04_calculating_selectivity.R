@@ -1,42 +1,58 @@
 ## this script calculates selectivity scores from biochemical data obtained with scripts '02_collecting_data_chembl.R'
 
-
 library(tidyverse)
 library(data.table)
 library(here)
 library(furrr)
-library(future.apply)
 library(synapser)
 library(synExtra)
 
 synLogin()
 syn <- synDownloader(here("tempdl"))
 
-
-
 `%nin%` <- Negate(`%in%`)
 
 # set directories, import files ------------------------------------------------
 ###############################################################################T
-release <- "chembl_v25"
+
+release <- "chembl_v27"
 dir_release <- here(release)
 syn_release <- synFindEntityId(release, "syn18457321")
 
+inputs <- list(
+  dose_response_measurements = c("aggregate_data", "dose_response_measurements.csv.gz")
+) %>%
+  map(~exec(synPluck, !!!c(syn_release, .x)))
 
-activities <- syn("syn20830825") %>%
-  read_rds()
+input_data <- inputs %>%
+  map(syn) %>%
+  map(
+    function(x)
+      list(
+        `.csv` = partial(
+          fread,
+          colClasses = c(
+            lspci_id = "integer"
+          )
+        ),
+        `.tsv` = fread,
+        `.rds` = read_rds
+      ) %>%
+      magrittr::extract2(which(str_detect(x, fixed(names(.))))) %>%
+      {.(x)}
+  )
 
 # set toolscore function -------------------------------------------------------
 ###############################################################################T
 
-calc_toolscore<-function(data, lspci_id, gene_id)
+calc_toolscore<-function(data, target_entrez_gene_id)
 {
-  example_subset<-data[data$lspci_id==lspci_id,]
+  example_subset<-data
 
-  ontarget<-example_subset[example_subset$gene_id == gene_id,]
-  offtarget<-example_subset[example_subset$gene_id !=  gene_id,]
+  ontarget<-example_subset[entrez_gene_id == target_entrez_gene_id]
+  offtarget<-example_subset[entrez_gene_id !=  target_entrez_gene_id]
 
-  chembl_active_data<-as.numeric(as.character(ontarget$standard_value))
+  chembl_active_data<-as.numeric(as.character(ontarget$value))
   chembl_active_low_nM<-chembl_active_data[chembl_active_data<=100]
   if (length(chembl_active_low_nM) > 1) {
     chembl_strength<-7
@@ -48,10 +64,10 @@ calc_toolscore<-function(data, lspci_id, gene_id)
 
   strength<-chembl_strength + 1 # bonus for multiple sources
 
-  ontarget_IC50<-as.numeric(as.character(ontarget[!is.na(ontarget$standard_value),]$standard_value))
+  ontarget_IC50<-as.numeric(as.character(ontarget[!is.na(ontarget$value),]$value))
   ontarget_IC50_N<-length(ontarget_IC50)
   ontarget_IC50_Q1<-quantile(ontarget_IC50, probs=0.25, na.rm=TRUE)
-  offtarget_IC50<-as.numeric(as.character(offtarget[!is.na(offtarget$standard_value),]$standard_value))
+  offtarget_IC50<-as.numeric(as.character(offtarget[!is.na(offtarget$value),]$value))
   offtarget_IC50_N<-length(offtarget_IC50)
   offtarget_IC50_Q1<-quantile(offtarget_IC50, probs=0.25, na.rm=TRUE)
   Q1_IC50_diff<-log10(offtarget_IC50_Q1)-log10(ontarget_IC50_Q1);
@@ -77,18 +93,21 @@ calc_toolscore<-function(data, lspci_id, gene_id)
                Q1_IC50_diff[[1]],offtarget_IC50_Q1[[1]],ontarget_IC50_Q1[[1]],ontarget_IC50_N,offtarget_IC50_N))
 }
 
-iterate_targets <- function(c.data) {
+iterate_targets <- function(c.data, ...) {
   toolscore<-list()
   toolscore_index<-0
   # c.data<-as.data.frame(lspci_id_list[[index_cmpd]])
   c.lspci_id<-unique(c.data$lspci_id)
-  c.targets<-unique(c.data$gene_id)
+  c.targets<-unique(c.data$entrez_gene_id)
+  pb <- txtProgressBar(max = length(c.targets), style = 3)
+  on.exit(close(pb))
   for(index_target in 1:length(c.targets)){
+    setTxtProgressBar(pb, index_target)
     c.df<-list()
-    c.gene_id<-c.targets[index_target]
+    c.entrez_gene_id<-c.targets[index_target]
     c.df$lspci_id<-c.lspci_id
-    c.df$gene_id<-c.gene_id
-    c.return<-calc_toolscore(c.data, c.lspci_id, c.gene_id)
+    c.df$entrez_gene_id<-c.entrez_gene_id
+    c.return<-calc_toolscore(c.data, c.entrez_gene_id)
     if(!is.na(c.return[[3]])){
       toolscore_index<-toolscore_index+1
       c.df$tool_score<-c.return[[1]]
@@ -107,66 +126,41 @@ iterate_targets <- function(c.data) {
   }
   # print(paste0(index_cmpd,"-",length(lspci_id_list)))
   # print(paste("Done", c.lspci_id))
-  toolscore
+  rbindlist(toolscore)
 }
 
 
 # calculate toolscores ---------------------------------------------------------
 ###############################################################################T
 
-activities_lspci_id_geneid <- activities %>%
-  unnest(data) %>%
-  rename(gene_id = entrez_gene_id, standard_value = value)
-
 # lspci_id_list<-dlply(activities_lspci_id_geneid,.(lspci_id),c)
 
-plan(multisession(workers = 10))
-toolscore.b <- activities_lspci_id_geneid %>%
-  group_nest(fp_name, fp_type, lspci_id, keep = TRUE) %>%
-  mutate(
-    result = future_map(
-      data,
-      iterate_targets,
-      .progress = TRUE
+plan(multicore(workers = 10))
+toolscore.b <- input_data[["dose_response_measurements"]][
+  ,
+  .(
+    data = list(.SD)
+  ),
+  keyby = .(lspci_id)
+][
+  ,
+  data := future_map(
+    data,
+    iterate_targets,
+    .options = furrr_options(
+      scheduling = 1000L
     ),
-    # result = future_lapply(
-    #   data,
-    #   iterate_targets,
-    #   future.chunk.size = 100
-    # )
+    .progress = TRUE
   )
-
-write_rds(
-  toolscore.b,
-  file.path(dir_release, "tool_score_raw.rds"),
-  compress = "gz"
-)
-
-# toolscore.b <- read_rds(file.path(dir_release, "tool_score_raw.rds"))
+]
 
 toolscore_all <- toolscore.b %>%
-  select(-data) %>%
-  as.data.table() %>%
-  .[
-    ,
-    .(result = map(
-      result,
-      compose(bind_rows, as_tibble, .dir = "forward")
-    ) %>%
-      bind_rows() %>%
-      list()),
-    keyby = .(fp_name, fp_type)
-  ] %>%
-  as_tibble()
+  unnest(data)
 
-
-write_rds(
+fwrite(
   toolscore_all,
-  file.path(dir_release, "selectivity.rds"),
-  compress = "gz"
+  file.path(dir_release, "toolscores.csv.gz")
 )
-
-# toolscore_all <- read_rds(file.path(dir_release, "selectivity.rds"))
 
 # Calculating selectivity classes ----------------------------------------------
 ###############################################################################T
@@ -230,85 +224,30 @@ selectivity_class_order <- c(
 
 selectivity_classes <- toolscore_all %>%
   mutate(
-    data = map(
-      result,
-      ~mutate(.x, selectivity_class = factor(calculate_selectivity_class(.x), levels = selectivity_class_order))
+    selectivity_class = factor(
+      calculate_selectivity_class(.),
+      levels = selectivity_class_order
     )
   )
 
-# Combine classes in single table ----------------------------------------------
-###############################################################################T
-
-canonical_table <- syn("syn20835543") %>%
-  read_rds()
-
-target_table <- syn("syn20693721") %>%
-  read_csv(col_types = "cicicccicccccc")
-
-selectivity_classes_annotated <- selectivity_classes %>%
-  left_join(
-    canonical_table %>%
-      rename(canonical_table = data) %>%
-      mutate(
-        canonical_table = map(canonical_table, select, lspci_id, chembl_id, hms_id, pref_name)
-      )
-  ) %>%
-  mutate(
-    selectivity = map2(
-      data, canonical_table,
-      left_join
-    ) %>%
-      map(
-        left_join,
-        target_table %>%
-          distinct(gene_id = entrez_gene_id, gene_symbol = symbol)
-      ) %>%
-      map(
-        select,
-        selectivity_class,
-        lspci_id, chembl_id, hms_id, pref_name, gene_id, gene_symbol, tool_score, strength, selectivity,
-        investigation_bias, wilcox_pval, IC50_diff, ontarget_IC50_Q1, offtarget_IC50_Q1,
-        ontarget_IC50_N , offtarget_IC50_N, N_total
-      )
-  )
-
-write_rds(
-  selectivity_classes_annotated %>%
-    select(fp_name, fp_type, data = selectivity),
-  file.path(dir_release, "selectivity_classes.rds"),
-  compress = "gz"
+fwrite(
+  selectivity_classes,
+  file.path(dir_release, "selectivity.csv.gz")
 )
-
-# selectivity_classes <- read_rds(file.path(dir_release, "selectivity_classes.rds"))
-
-# pwalk(
-#   selectivity_classes_long,
-#   function(fp_name, selectivity, ...) {
-#     write_csv(selectivity, file.path(dir_release, paste0("selectivity_classes_", fp_name, ".csv.gz")))
-#   }
-# )
 
 # Store to synapse -------------------------------------------------------------
 ###############################################################################T
 
 selectivity_calc_activity <- Activity(
   name = "Calculate compound-target selectivity and selectivity classes",
-  used = c(
-    "syn20693721",
-    "syn20830825",
-    "syn20835543"
-  ),
+  used = unname(inputs),
   executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/data_processing/04_calculating_selectivity.R"
 )
 
-syn_selectivity_folder <- Folder("selectivity", parent = syn_release) %>%
-  synStore() %>%
-  chuck("properties", "id")
+syn_selectivity_folder <- synMkdir(syn_release, "selectivity")
 
 c(
-  file.path(dir_release, "selectivity.rds"),
-  file.path(dir_release, "selectivity_classes.rds")
-  # Sys.glob(file.path(dir_release, "selectivity_classes_*.csv.gz"))
+  file.path(dir_release, "selectivity.csv.gz")
 ) %>%
   synStoreMany(parentId = syn_selectivity_folder, activity = selectivity_calc_activity)
 
