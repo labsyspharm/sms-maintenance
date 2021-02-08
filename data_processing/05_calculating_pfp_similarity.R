@@ -2,7 +2,6 @@
 library(tidyverse)
 library(data.table)
 library(here)
-library(Matrix)
 library(furrr)
 library(synapser)
 library(synExtra)
@@ -16,12 +15,34 @@ syn <- synDownloader(here("tempdl"))
 
 # set directories, import files ------------------------------------------------
 ###############################################################################T
-release <- "chembl_v25"
+
+release <- "chembl_v27"
 dir_release <- here(release)
 syn_release <- synFindEntityId(release, "syn18457321")
 
-pheno_data <- syn("syn20841032") %>%
-  read_rds()
+inputs <- list(
+  pheno_q1 = c("aggregate_data", "phenotypic_q1.csv.gz")
+) %>%
+  map(~exec(synPluck, !!!c(syn_release, .x)))
+
+input_data <- inputs %>%
+  map(syn) %>%
+  map(
+    function(x)
+      list(
+        `.csv` = partial(
+          fread,
+          colClasses = c(
+            lspci_id = "integer"
+          )
+        ),
+        `.tsv` = fread,
+        `.rds` = read_rds
+      ) %>%
+      magrittr::extract2(which(str_detect(x, fixed(names(.))))) %>%
+      {.(x)}
+  )
+
 
 # convert assay results to r-scores --------------------------------------------
 ###############################################################################T
@@ -45,58 +66,53 @@ calculate_r_score_per_assay <- function(df) {
   c.result
 }
 
-calculate_r_score <- function(df) {
-  plan(multisession(workers = 8))
-  df %>%
-    group_nest(assay_id) %>%
-    mutate(
-      data = future_map(
-        data, calculate_r_score_per_assay,
-        .progress = TRUE
-      )
-    )
-}
+plan(multicore(workers = 10))
 
-rscores_raw <- pheno_data %>%
-  mutate(
-    data = map(
-      data, calculate_r_score
+rscores_raw <- copy(input_data[["pheno_q1"]])[
+  ,
+  `:=`(
+    value_Q1 = as.numeric(value_Q1),
+    log10_value_Q1 = log10(as.numeric(value_Q1))
+  )
+][
+  ,
+  .(data = list(.SD)),
+  keyby = .(assay_id)
+][
+  ,
+  data := future_map(
+    data,
+    calculate_r_score_per_assay,
+    .progress = TRUE,
+    .options = furrr_options(
+      scheduling = 10L
     )
   )
+]
 
 rscores <- rscores_raw %>%
-  mutate(
-    data = map(
-      data,
-      ~set_names(.x$data, .x$assay_id) %>%
-        rbindlist(idcol = "assay_id") %>%
-        as_tibble()
-    )
-  )
+  unnest(data) %>%
+  setDT() %>%
+  setkey(assay_id, lspci_id)
 
-write_rds(
+fwrite(
   rscores,
-  file.path(dir_release, "pheno_data_rscores.rds"),
-  compress = "gz"
+  file.path(dir_release, "phenotypic_rscores.csv.gz")
 )
 
 # Upload to synapse ------------------------------------------------------------
 ###############################################################################T
 
 pfp_activity <- Activity(
-  name = "Calculate phenotypic correlation",
-  used = c(
-    "syn20841032"
-  ),
+  name = "Calculate phenotypic R scores",
+  used = unname(inputs),
   executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/data_processing/05_calculating_pfp_similarity.R"
 )
 
-syn_pfp_sim <- Folder("pfp_similarity", parent = syn_release) %>%
-  synStore() %>%
-  chuck("properties", "id")
+syn_pfp_sim <- synMkdir(syn_release, "pfp_similarity")
 
 c(
-  file.path(dir_release, "pheno_data_rscores.rds")
+  file.path(dir_release, "phenotypic_rscores.csv.gz")
 ) %>%
   synStoreMany(parent = syn_pfp_sim, activity = pfp_activity)
 
