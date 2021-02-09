@@ -1,6 +1,7 @@
 library(tidyverse)
 library(synapser)
 library(synExtra)
+library(data.table)
 library(here)
 
 synLogin()
@@ -9,62 +10,75 @@ syn <- synDownloader(here("tempdl"))
 
 # Set directories, import files ------------------------------------------------
 ###############################################################################T
-release <- "chembl_v25"
+release <- "chembl_v27"
 dir_release <- here(release)
 syn_release <- synFindEntityId(release, "syn18457321")
 
-compound_mapping <- syn("syn20934414") %>%
-  read_rds()
+inputs <- list(
+  compound_dictionary = c("compounds_processed", "compound_dictionary.csv.gz"),
+  lspci_id_vendor_id_map = c("compounds_processed", "lspci_id_vendor_id_map.csv.gz"),
+  emolecules_vendor_info = c("id_mapping", "emolecules", "emolecules_vendor_info.csv.gz"),
+  emolecules_supplier_info = c("id_mapping", "emolecules", "suppliers.tsv.gz")
+) %>%
+  map(~exec(synPluck, !!!c(syn_release, .x)))
 
-zinc_vendor_names <- syn("syn21901782") %>%
-  read_csv()
-
-zinc_availability <- syn("syn21901780") %>%
-  read_csv()
-
-# Combine vendor names with commercial data ------------------------------------
-###############################################################################T
-
-zinc_commercial <- zinc_availability %>%
-  left_join(
-    zinc_vendor_names %>%
-      distinct(vendor, vendor_id, vendor_name),
-    by = c("vendor", "vendor_id")
+input_data <- inputs %>%
+  map(syn) %>%
+  map(
+    function(x)
+      list(
+        `.csv` = partial(
+          fread,
+          colClasses = c(
+            lspci_id = "integer"
+          )
+        ),
+        `.tsv` = fread,
+        `.rds` = read_rds
+      ) %>%
+      magrittr::extract2(which(str_detect(x, fixed(names(.))))) %>%
+      {.(x)}
   )
 
-# Map Zinc compounds to lspci_id -----------------------------------------------
+
+# Map Emolecules compounds to lspci_id -----------------------------------------
 ###############################################################################T
 
-compound_commercial_info <- compound_mapping %>%
-  mutate(
-    data = map(
-      data,
-      ~.x %>%
-        select(id, lspci_id) %>%
-        inner_join(
-          zinc_commercial,
-          by = c("id" = "chembl_id")
-        ) %>%
-        distinct(lspci_id, vendor, vendor_id, vendor_name)
-    )
+compound_commercial_info <- input_data[["lspci_id_vendor_id_map"]] %>%
+  filter(source == "emolecules") %>%
+  select(-source) %>%
+  mutate(emolecules_id = as.integer(vendor_id)) %>%
+  select(-vendor_id) %>%
+  inner_join(
+    input_data[["emolecules_vendor_info"]] %>%
+      distinct(
+        parent_id,
+        supplier_id,
+        catalog_number = compound_id
+      ),
+    by = c("emolecules_id" = "parent_id")
+  ) %>%
+  inner_join(
+    input_data[["emolecules_supplier_info"]] %>%
+      distinct(
+        supplier_id,
+        supplier_name,
+        tier
+      ),
+    by = "supplier_id"
   )
 
-write_rds(
+fwrite(
   compound_commercial_info,
-  file.path(dir_release, "compound_commercial_info_zinc.rds"),
-  compress = "gz"
+  file.path(dir_release, "lspci_id_compound_commercial_info.csv.gz")
 )
 
 # Store to synapse -------------------------------------------------------------
 ###############################################################################T
 
 wrangle_activity <- Activity(
-  name = "Wrangle commercial availability of compounds from ZINC",
-  used = c(
-    "syn20934414",
-    "syn21901782",
-    "syn21901780"
-  ),
+  name = "Wrangle commercial availability of compounds from Emolecules",
+  used = unname(inputs),
   executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/data_processing/08_commercial_availability.R"
 )
 
@@ -73,6 +87,6 @@ syn_vendors <- Folder("vendors", parent = syn_release) %>%
   chuck("properties", "id")
 
 c(
-  file.path(dir_release, "compound_commercial_info_zinc.rds")
+  file.path(dir_release, "lspci_id_compound_commercial_info.csv.gz")
 ) %>%
   synStoreMany(parentId = syn_vendors, activity = wrangle_activity)
