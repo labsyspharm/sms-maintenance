@@ -6,41 +6,76 @@ library(here)
 synLogin()
 syn <- synDownloader(here("tempdl"))
 
+source(here("utils", "load_save.R"))
 
 # Set directories, import files ------------------------------------------------
 ###############################################################################T
-release <- "chembl_v25"
+release <- "chembl_v27"
 dir_release <- here(release)
 syn_release <- synFindEntityId(release, "syn18457321")
 
-clinical_info_raw <- syn("syn20693828") %>%
-  read_csv()
+inputs <- list(
+  compound_dictionary = c("compounds_processed", "compound_dictionary.csv.gz"),
+  approval_chembl = c("raw_data", "chembl", "chembl_approval_info_raw.csv.gz"),
+  approval_fda = c("raw_data", "lsp_FDA_first_approval_table.csv"),
+  lspci_id_vendor_id_map = c("compounds_processed", "lspci_id_vendor_id_map.csv.gz")
+) %>%
+  pluck_inputs(syn_parent = syn_release)
 
-compound_map <- syn("syn20934414") %>%
-  read_rds()
+input_data <- inputs %>%
+  load_input_data(syn = syn)
 
 # Map IDs ----------------------------------------------------------------------
 ###############################################################################T
 
-clinical_info <- compound_map %>%
-  mutate(
-    data = map(
-      data,
-      ~inner_join(clinical_info_raw, select(.x, id, lspci_id), by = c("chembl_id_compound" = "id")) %>%
-        distinct(
-          lspci_id, chembl_id = chembl_id_compound, max_phase, first_approval, oral, parenteral, topical,
-          black_box_warning, first_in_class, prodrug, indication_class,
-          withdrawn_flag, withdrawn_year, withdrawn_country, withdrawn_reason,
-          max_phase_for_indication = max_phase_for_ind, mesh_id, mesh_heading, efo_id, efo_term,
-          ref_type, ref_id, ref_url
-        )
+approval_table <- copy(input_data[["lspci_id_vendor_id_map"]])[
+  source == "chembl",
+  .(lspci_id, chembl_id = vendor_id)
+][
+  input_data[["approval_chembl"]][
+    ,
+    .(
+      chembl_id = chembl_id_compound,
+      max_phase,
+      first_approval,
+      oral, parenteral, topical,
+      black_box_warning, first_in_class, prodrug, indication_class,
+      withdrawn_flag, withdrawn_year, withdrawn_country, withdrawn_reason,
+      max_phase_for_indication = max_phase_for_ind, mesh_heading, efo_id, efo_term, ref_type,
+      ref_id, ref_url
     )
-  )
+  ] %>%
+    unique(),
+  on = "chembl_id",
+  nomatch = NULL
+][
+#   input_data[["approval_fda"]][
+#     ,
+#     .(
+#       lspci_id, fda_application_number = application_number,
+#       active_ingredient, current_marketing_status, application_type,
+#       submission_status_year, submission_type, submission_class,
+#       submission_class_description
+#     )
+#   ],
+#   on = "lspci_id",
+#   nomatch = NULL
+# ][
+  ,
+  `:=`(
+    max_phase = if_else(
+      lspci_id %in% input_data[["fda_approval"]][["lspci_id"]],
+      4L,
+      max(nafill(max_phase, fill = 0L))
+    ),
+    max_phase_for_indication = max(nafill(max_phase_for_indication, fill = 0L))
+  ),
+  keyby = lspci_id
+]
 
-write_rds(
-  clinical_info,
-  file.path(dir_release, "clinical_info.rds"),
-  compress = "gz"
+fwrite(
+  approval_table,
+  file.path(dir_release, "lspci_id_approval.csv.gz")
 )
 
 # Store to synapse -------------------------------------------------------------
@@ -48,19 +83,14 @@ write_rds(
 
 clinical_info_activity <- Activity(
   name = "Map IDs of clinical information from Chembl",
-  used = c(
-    "syn20693828",
-    "syn20934414"
-  ),
+  used = unname(inputs),
   executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/data_processing/09_clinical_info.R"
 )
 
-syn_clinical_info <- Folder("clinical_info", parent = syn_release) %>%
-  synStore() %>%
-  chuck("properties", "id")
+syn_clinical_info <- synMkdir(syn_release, "clinical_info")
 
 c(
-  file.path(dir_release, "clinical_info.rds")
+  file.path(dir_release, "lspci_id_approval.csv.gz")
 ) %>%
   synStoreMany(parentId = syn_clinical_info, activity = clinical_info_activity)
 
