@@ -8,77 +8,60 @@ library(synExtra)
 synLogin()
 syn <- synDownloader(here("tempdl"))
 
+source(here("utils", "load_save.R"))
+
 # set directories, import files ------------------------------------------------
 ###############################################################################T
-release <- "chembl_v25"
+release <- "chembl_v27"
 dir_release <- here(release)
 syn_release <- synFindEntityId(release, "syn18457321")
 
-# Load files -------------------------------------------------------------------
-###############################################################################T
+inputs <- list(
+  compound_dictionary = c("compounds_processed", "compound_dictionary.csv.gz"),
+  fingerprints = c("compounds_processed", "lspci_id_fingerprints.csv.gz"),
+  selectivity = c("selectivity", "selectivity.csv.gz"),
+  affinity_q1 = c("aggregate_data", "dose_response_q1.csv.gz"),
+  approval = c("clinical_info", "lspci_id_approval.csv.gz")
+) %>%
+  pluck_inputs(syn_parent = syn_release)
 
-selectivity <- syn("syn20836653") %>%
-  read_rds()
-
-canonical_fps <- syn("syn21042105") %>%
-  read_rds()
-
-commercial_info <- syn("syn21049601") %>%
-  read_rds()
-
-kinases <- syn("syn12617467") %>%
-  read_csv(col_types = "iccllllic")
-
-affinity <- syn("syn20830834") %>%
-  read_rds()
-
-clinical_info <- syn("syn21064122") %>%
-  read_rds()
+input_data <- inputs %>%
+  load_input_data(syn = syn)
 
 # Prepare chemical similarity  files -------------------------------------------
 ###############################################################################T
 
-fps_selective <- canonical_fps %>%
-  left_join(rename(selectivity, selectivity_df = data)) %>%
-  mutate(
-    data = pmap(
-      list(data, fp_name, selectivity_df),
-      ~filter(
-        ..1,
-        fp_name == ..2,
-        lspci_id %in% {
-          filter(..3, selectivity_class %in% c("most_selective", "semi_selective")) %>%
-            pull(lspci_id)
-        }
-      ) %>%
-        select(fingerprint, lspci_id)
-    )
-  )
+fps_selective <- input_data[["fingerprints"]][
+  lspci_id %in% input_data[["selectivity"]][
+    selectivity_class %in% c("most_selective", "semi_selective")
+  ][["lspci_id"]]
+]
 
-chemical_sim_selective <- fps_selective %>%
-  mutate(
-    data = map(
-      data,
-      function(df) {
-        fps <- MorganFPS$new(
-          with(df, set_names(fingerprint, lspci_id))
-        )
-        set_names(df[["lspci_id"]]) %>%
-          map(~fps$tanimoto_all(.x)) %>%
-          bind_rows(.id = "query") %>%
-          select(lspci_id_1 = query, lspci_id_2 = id, tanimoto_similarity = structural_similarity) %>%
-          mutate_at(vars(starts_with("lspci_id")), as.integer) %>%
-          filter(lspci_id_1 < lspci_id_2, tanimoto_similarity > 0.2) %>%
-          arrange(lspci_id_1, lspci_id_2) %>%
-          as_tibble()
-      }
-    )
+calc_chemical_sim <- function(df) {
+  # browser()
+  fps <- MorganFPS$new(
+    with(df, set_names(fingerprints, lspci_id))
   )
+  set_names(df[["lspci_id"]]) %>%
+    map(~fps$tanimoto_all(.x)) %>%
+    bind_rows(.id = "query") %>%
+    select(lspci_id_1 = query, lspci_id_2 = id, tanimoto_similarity = structural_similarity) %>%
+    mutate_at(vars(starts_with("lspci_id")), as.integer) %>%
+    filter(lspci_id_1 < lspci_id_2, tanimoto_similarity > 0.2) %>%
+    arrange(lspci_id_1, lspci_id_2) %>%
+    as_tibble()
+}
 
-write_rds(
-  chemical_sim_selective,
-  file.path(dir_release, "chemical_sim_selective.rds"),
-  compress = "gz"
+chemical_sim <- fps_selective %>%
+  group_nest(fp_name, fp_type) %>%
+  mutate(
+    data = map(data, calc_chemical_sim)
+  ) %>%
+  unnest(data)
+
+fwrite(
+  chemical_sim,
+  file.path(dir_release, "chemical_sim_selective.csv.gz")
 )
 
 # chemical_sim_selective <- read_rds(file.path(dir_release, "chemical_sim_selective.rds"))
@@ -140,15 +123,15 @@ find_optimal_compounds_all_targets <- function(
       selectivity_class = factor(selectivity_class, levels = selectivity_classes),
       commercially_available = lspci_id %in% commercial_info$lspci_id
     ) %>%
-    select(gene_id, lspci_id, tool_score, selectivity_class, ontarget_IC50_Q1, commercially_available) %>%
-    group_nest(gene_id)
+    select(entrez_gene_id, lspci_id, tool_score, selectivity_class, ontarget_IC50_Q1, commercially_available) %>%
+    group_nest(entrez_gene_id)
   chemical_sim_filtered <- chemical_sim %>%
     filter(tanimoto_similarity >= maximum_tanimoto_similarity)
   cmpds <- sel_by_gene %>%
     # Only keep targets with at least 2 compounds
     # filter(map_lgl(data, ~nrow(.x) >= 2)) %>%
     transmute(
-      gene_id,
+      entrez_gene_id,
       best_pair = map(
         data,
         find_optimal_compounds, chemical_sim_filtered
@@ -159,20 +142,31 @@ find_optimal_compounds_all_targets <- function(
   cmpds
 }
 
-optimal_libraries <- chemical_sim_selective %>%
-  left_join(rename(commercial_info, commercial_info_df = data), by = c("fp_type", "fp_name")) %>%
-  rename(chemical_similarity_df = data) %>%
+optimal_libraries <- chemical_sim %>%
+  group_nest(fp_name, fp_type) %>%
   mutate(
     data = pmap(
-      list(selectivity_df, chemical_similarity_df, commercial_info_df),
-      find_optimal_compounds_all_targets
+      list(
+        list(input_data[["selectivity"]]),
+        data,
+        list(input_data[["compound_dictionary"]][
+          commercially_available == TRUE
+        ])
+      ),
+      find_optimal_compounds_all_targets,
+      maximum_tanimoto_similarity = 0.2,
+      selectivity_classes = c(
+        "most_selective",
+        "semi_selective",
+        "poly_selective"
+      )
     )
-  )
-write_rds(
-  optimal_libraries %>%
-    select(fp_name, fp_type, data),
-  file.path(dir_release, "optimal_library.rds"),
-  compress = "gz"
+  ) %>%
+  unnest(data)
+
+fwrite(
+  optimal_libraries,
+  file.path(dir_release, "optimal_library.csv.gz")
 )
 
 # optimal_libraries <- read_rds(file.path(dir_release, "optimal_library.rds"))
