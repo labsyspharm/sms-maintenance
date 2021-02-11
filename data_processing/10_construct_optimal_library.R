@@ -21,7 +21,8 @@ inputs <- list(
   fingerprints = c("compounds_processed", "lspci_id_fingerprints.csv.gz"),
   selectivity = c("selectivity", "selectivity.csv.gz"),
   affinity_q1 = c("aggregate_data", "dose_response_q1.csv.gz"),
-  approval = c("clinical_info", "lspci_id_approval.csv.gz")
+  approval = c("clinical_info", "lspci_id_approval.csv.gz"),
+  kinases = c("raw_data", "kinome", "kinase_data.csv")
 ) %>%
   pluck_inputs(syn_parent = syn_release)
 
@@ -69,6 +70,12 @@ fwrite(
 # Construct optimal library ----------------------------------------------------
 ###############################################################################T
 
+SELECTIVITY_CLASSES <- c("most_selective", "semi_selective", "poly_selective", "unknown_selective")
+
+commercially_available_compounds <- input_data[["compound_dictionary"]][
+  commercially_available == TRUE
+]
+
 find_optimal_compounds <- function(
   selectivity, chemical_similarity
 ) {
@@ -115,7 +122,7 @@ find_optimal_compounds <- function(
 
 find_optimal_compounds_all_targets <- function(
   selectivity, chemical_sim, commercial_info, maximum_tanimoto_similarity = 0.2,
-  selectivity_classes = c("most_selective", "semi_selective", "poly_selective", "unknown_selective")
+  selectivity_classes = SELECTIVITY_CLASSES
 ) {
   sel_by_gene <- selectivity %>%
     filter(selectivity_class %in% selectivity_classes) %>%
@@ -142,16 +149,14 @@ find_optimal_compounds_all_targets <- function(
   cmpds
 }
 
-optimal_libraries <- chemical_sim %>%
+optimal_libraries_all <- chemical_sim %>%
   group_nest(fp_name, fp_type) %>%
   mutate(
     data = pmap(
       list(
         list(input_data[["selectivity"]]),
         data,
-        list(input_data[["compound_dictionary"]][
-          commercially_available == TRUE
-        ])
+        list(commercially_available_compounds)
       ),
       find_optimal_compounds_all_targets,
       maximum_tanimoto_similarity = 0.2,
@@ -161,9 +166,19 @@ optimal_libraries <- chemical_sim %>%
         "poly_selective"
       )
     )
-  ) %>%
-  unnest(data)
+  )
 
+qsave(
+  optimal_libraries_all,
+  file.path(dir_release, "optimal_library.qs"),
+  preset = "fast"
+)
+
+optimal_libraries <- optimal_libraries_all %>%
+  filter(fp_name == "morgan_normal") %>%
+  chuck("data", 1)
+
+# Only save library based on morgan fingerprints as csv
 fwrite(
   optimal_libraries,
   file.path(dir_release, "optimal_library.csv.gz")
@@ -172,115 +187,203 @@ fwrite(
 # optimal_libraries <- read_rds(file.path(dir_release, "optimal_library.rds"))
 
 # Criteria clinical phase >=1 and affinity IC50_Q1 <= 1 uM
-clinical_compounds <- clinical_info %>%
-  left_join(rename(affinity, affinity_df = data), by = c("fp_type", "fp_name")) %>%
-  left_join(rename(selectivity, selectivity_df = data), by = c("fp_type", "fp_name")) %>%
-  left_join(rename(commercial_info, commercial_info_df = data), by = c("fp_type", "fp_name")) %>%
-  mutate(
-    data = pmap(
-      list(data, affinity_df, selectivity_df, commercial_info_df),
-      ~inner_join(
-        distinct(..1, lspci_id, max_phase) %>%
-          drop_na() %>%
-          filter(max_phase >= 1),
-        bind_rows(
-          ..3,
-          anti_join(
-              ..2 %>%
-                select(lspci_id, gene_id = entrez_gene_id, ontarget_IC50_Q1 = Q1, ontarget_IC50_N = n_measurement),
-              ..3,
-              by = c("lspci_id", "gene_id")
-            )
+clinical_compounds <- input_data[["approval"]][
+  ,
+  .(lspci_id, max_phase)
+] %>%
+  unique() %>%
+  inner_join(
+    bind_rows(
+      input_data[["selectivity"]],
+      input_data[["affinity_q1"]] %>%
+        rename(
+          ontarget_IC50_N = n_measurement,
+          ontarget_IC50_Q1 = Q1
         ) %>%
-          filter(ontarget_IC50_Q1 <= 1000),
-        by = "lspci_id"
-      ) %>%
-        mutate(reason_included = "clinical", commercially_available = lspci_id %in% ..4[["lspci_id"]])
-    )
+        anti_join(
+          input_data[["selectivity"]],
+          by = c("lspci_id", "entrez_gene_id")
+        )
+    ),
+    by = "lspci_id"
+  ) %>%
+  filter(
+    ontarget_IC50_Q1 < 1000
+  ) %>%
+  mutate(
+    reason_included = "clinical",
+    commercially_available = lspci_id %in% commercially_available_compounds[["lspci_id"]]
   )
 
-write_rds(
-  clinical_compounds %>%
-    select(fp_name, fp_type, data),
-  file.path(dir_release, "clinical_library.rds"),
-  compress = "gz"
+
+fwrite(
+  clinical_compounds,
+  file.path(dir_release, "clinical_library.csv.gz")
 )
+
+# Compare with old version
+#
+# old_clinical_compounds <- syn("syn22089541") %>%
+#   read_rds() %>%
+#   chuck("data", 2)
+#
+# old_optimal_libraries <- syn("syn21092727") %>%
+#   read_rds() %>%
+#   chuck("data", 2)
+#
+# old_affinities <- syn("syn20830834") %>%
+#   read_rds() %>%
+#   chuck("data", 2)
+#
+# old_clinical_info <- syn("syn21064122") %>%
+#   read_rds() %>%
+#   chuck("data", 2)
+#
+# clinical_old_not_new <- old_clinical_compounds %>%
+#   anti_join(
+#     clinical_compounds,
+#     by = c("lspci_id", "gene_id" = "entrez_gene_id")
+#   )
+#
+# clinical_overlap <- full_join(
+#   old_clinical_compounds %>%
+#     distinct(lspci_id, entrez_gene_id = gene_id, old = TRUE),
+#   clinical_compounds %>%
+#     distinct(lspci_id, entrez_gene_id, new = TRUE)
+# ) %>%
+#   mutate(across(c(old, new), replace_na, replace = FALSE))
+#
+# clinical_overlap %>%
+#   count(old, new)
+#
+# clinical_overlap_source_data <- clinical_overlap %>%
+#   left_join(
+#     input_data[["affinity_q1"]] %>%
+#       group_by(lspci_id, entrez_gene_id) %>%
+#       summarize(
+#         affinity_data = TRUE,
+#         affinity_low = any(Q1 < 1000)
+#       )
+#   ) %>%
+#   left_join(
+#     input_data[["approval"]] %>%
+#       distinct(lspci_id, approval_data = TRUE)
+#   ) %>%
+#   mutate(across(where(is.logical), replace_na, replace = FALSE))
+#
+# clinical_overlap_source_data %>%
+#   count(old, new, affinity_data, affinity_low, approval_data)
+#
+#
+# clinical_overlap_source_data_old <- clinical_overlap %>%
+#   left_join(
+#     old_affinities %>%
+#       group_by(lspci_id, entrez_gene_id) %>%
+#       summarize(
+#         affinity_data = TRUE,
+#         affinity_low = any(Q1 < 1000)
+#       )
+#   ) %>%
+#   left_join(
+#     old_clinical_info %>%
+#       distinct(lspci_id, approval_data = TRUE)
+#   ) %>%
+#   mutate(across(where(is.logical), replace_na, replace = FALSE))
+#
+# clinical_overlap_source_data_old %>%
+#   count(old, new, affinity_data, affinity_low, approval_data)
+#
+#
+# affinity_comparison <- full_join(
+#   input_data[["affinity_q1"]] %>%
+#     group_by(lspci_id, entrez_gene_id) %>%
+#     summarize(
+#       Q1_new = Q1,
+#       affinity_new = TRUE,
+#       affinity_new_low = any(Q1 < 1000),
+#       .groups = "drop"
+#     ),
+#   old_affinities %>%
+#     group_by(lspci_id, entrez_gene_id) %>%
+#     summarize(
+#       Q1_old = Q1,
+#       affinity_old = TRUE,
+#       affinity_old_low = any(Q1 < 1000),
+#       .groups = "drop"
+#     )
+# ) %>%
+#   mutate(across(where(is.logical), replace_na, replace = FALSE))
+#
+# affinity_comparison %>%
+#   count(affinity_new, affinity_new_low, affinity_old, affinity_old_low)
+#
+# input_data[["approval"]] %>%
+#   filter(lspci_id %in% clinical_old_not_new[["lspci_id"]])
 
 # Combine libraries ------------------------------------------------------------
 ###############################################################################T
 
-optimal_libraries_combined <- optimal_libraries %>%
-  inner_join(
-    select(clinical_compounds, fp_type, fp_name, clinical = data)
+optimal_libraries_combined <- bind_rows(
+    optimal_libraries %>%
+      select(entrez_gene_id, reason_included, ends_with("_1")) %>%
+      rename_all(str_replace, fixed("_1"), ""),
+    optimal_libraries %>%
+      select(entrez_gene_id, reason_included, ends_with("_2")) %>%
+      rename_all(str_replace, fixed("_2"), "") %>%
+      drop_na(lspci_id)
+  ) %>%
+  bind_rows(
+    anti_join(
+      clinical_compounds,
+      .,
+      by = c("lspci_id", "entrez_gene_id")
+    ) %>%
+      select(entrez_gene_id, lspci_id, reason_included, selectivity_class, tool_score, ontarget_IC50_Q1, commercially_available)
   ) %>%
   mutate(
-    data = pmap(
-      list(data, clinical),
-      ~bind_rows(
-        ..1 %>%
-          select(gene_id, reason_included, ends_with("_1")) %>%
-          rename_all(str_replace, fixed("_1"), ""),
-        ..1 %>%
-          select(gene_id, reason_included, ends_with("_2")) %>%
-          rename_all(str_replace, fixed("_2"), "") %>%
-          drop_na(lspci_id)
-      ) %>%
-        mutate(selectivity_class = factor(selectivity_class, levels = levels(..2[["selectivity_class"]]))) %>%
-        bind_rows(
-          anti_join(..2, ., by = c("lspci_id", "gene_id")) %>%
-            select(gene_id, lspci_id, reason_included, selectivity_class, tool_score, ontarget_IC50_Q1, commercially_available)
-        ) %>%
-        arrange(
-          gene_id,
-          desc(as.integer(commercially_available)),
-          as.integer(selectivity_class),
-          desc(tool_score),
-          ontarget_IC50_Q1
-        ) %>%
-        group_by(gene_id) %>%
-        mutate(rank = 1:n()) %>%
-        ungroup()
-    )
-  )
+    selectivity_class = factor(selectivity_class, levels = SELECTIVITY_CLASSES)
+  ) %>%
+  arrange(
+    entrez_gene_id,
+    desc(as.integer(commercially_available)),
+    as.integer(selectivity_class),
+    desc(tool_score),
+    ontarget_IC50_Q1
+  ) %>%
+  group_by(entrez_gene_id) %>%
+  mutate(rank = 1:n()) %>%
+  ungroup()
 
-write_rds(
-  optimal_libraries_combined %>%
-    select(fp_name, fp_type, data),
-  file.path(dir_release, "optimal_library_combined.rds"),
-  compress = "gz"
+fwrite(
+  optimal_libraries_combined,
+  file.path(dir_release, "optimal_library_combined.csv.gz")
 )
-
 
 # Calculate liganded genome ----------------------------------------------------
 ###############################################################################T
 
-# Liganded genome 3 cmpds < 10 uM
-# liganded_genome <- affinity %>%
-#   mutate(
-#     data = map(
-#       data,
-#
-#     )
-#   )
+# Liganded genome genes with at least 3 cmpds < 10 uM
+liganded_genome <- input_data[["affinity_q1"]] %>%
+  filter(Q1 < 10000) %>%
+  group_by(entrez_gene_id) %>%
+  summarize(Q1 = min(Q1), .groups = "drop")
+
+fwrite(
+  liganded_genome,
+  file.path(dir_release, "liganded_genome.csv.gz")
+)
 
 # Subset optimal library to contain only kinase targets ------------------------
 ###############################################################################T
 
 optimal_kinase_libraries <- optimal_libraries_combined %>%
-  mutate(
-    data = map(
-      data,
-      filter,
-      # Not taking into account kinases annotated in uniprot by Nienke's advice
-      gene_id %in% filter(kinases, in_manning | in_kinmap | in_IDG_darkkinases)$gene_id
-    )
+  filter(
+    entrez_gene_id %in% input_data[["kinases"]][["gene_id"]]
   )
 
-write_rds(
-  optimal_kinase_libraries %>%
-    select(fp_type, fp_name, data),
-  file.path(dir_release, "optimal_kinase_library_combined.rds"),
-  compress = "gz"
+write_csv(
+  optimal_kinase_libraries,
+  file.path(dir_release, "optimal_kinase_library.csv.gz")
 )
 
 # Store to synapse -------------------------------------------------------------
@@ -288,27 +391,18 @@ write_rds(
 
 library_activity <- Activity(
   name = "Construct optimal compound library",
-  used = c(
-    "syn12617467",
-    "syn20836653",
-    "syn21042105",
-    "syn21049601",
-    "syn20830834",
-    "syn21064122"
-  ),
+  used = unname(inputs),
   executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/data_processing/10_construct_optimal_library.R"
 )
 
-syn_library_folder <- Folder("compound_library", parent = syn_release) %>%
-  synStore() %>%
-  chuck("properties", "id")
+syn_library_folder <- synMkdir(syn_release, "compound_library")
 
 c(
-  file.path(dir_release, "optimal_library.rds"),
-  file.path(dir_release, "optimal_kinase_library.rds"),
-  file.path(dir_release, "clinical_library.rds"),
-  file.path(dir_release, "optimal_library_combined.rds"),
-  file.path(dir_release, "optimal_kinase_library_combined.rds")
+  file.path(dir_release, "optimal_library.csv.gz"),
+  file.path(dir_release, "clinical_library.csv.gz"),
+  file.path(dir_release, "optimal_library_combined.csv.gz"),
+  file.path(dir_release, "optimal_kinase_library.csv.gz"),
+  file.path(dir_release, "liganded_genome.csv.gz")
 ) %>%
   synStoreMany(parentId = syn_library_folder, activity = library_activity)
 
