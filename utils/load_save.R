@@ -3,24 +3,33 @@ library(data.table)
 library(qs)
 library(synapser)
 
+
 load_input_data <- function(inputs, syn) {
+  # Some columns are always incorrectly read as character by fread
+  # https://github.com/Rdatatable/data.table/issues/4802
+  column_types <- list(
+    lspci_id = as.integer,
+    ontarget_IC50_Q1 = as.numeric,
+    offtarget_IC50_Q1 = as.numeric,
+    Q1 = as.numeric
+  )
   inputs %>%
     map(syn) %>%
     map(
       function(x)
         list(
-          `.csv` = partial(
-            fread,
-            colClasses = c(
-              lspci_id = "integer"
-            )
-          ),
+          `.csv` = fread,
           `.tsv` = fread,
           `.rds` = read_rds,
           `.qs` = qread
         ) %>%
-        magrittr::extract2(which(str_detect(x, fixed(names(.))))) %>%
-        {.(x)}
+        magrittr::extract2(which(str_detect(x, fixed(names(.))))) %>% {
+          df <- .(x)
+          cols <- intersect(colnames(df), names(column_types)) %>%
+            set_names() %>%
+            map(function(col) column_types[[col]](df[[col]]))
+          set(df, j = names(cols), value = unname(cols))
+        }
     )
 }
 
