@@ -13,6 +13,8 @@ release <- "chembl_v27"
 dir_release <- here(release)
 syn_release <- synFindEntityId(release, "syn18457321")
 
+source(here("utils", "load_save.R"))
+
 # Loading files ----------------------------------------------------------------
 ###############################################################################T
 
@@ -26,20 +28,10 @@ inputs <- list(
   inchis = c("canonicalization", "canonical_inchi_ids.csv.gz"),
   fda_approval = c("raw_data", "lsp_FDA_first_approval_table.csv")
 ) %>%
-  map(~exec(synPluck, !!!c(syn_release, .x)))
+  pluck_inputs(syn_parent = syn_release)
 
 input_data <- inputs %>%
-  map(syn) %>%
-  map(
-    function(x)
-      list(
-        `.csv` = partial(fread, colClasses = c(inchi_id = "integer")),
-        `.tsv` = fread,
-        `.rds` = read_rds
-      ) %>%
-      magrittr::extract2(which(str_detect(x, fixed(names(.))))) %>%
-      {.(x)}
-  )
+  load_input_data(syn = syn)
 
 # Finding canonical member of equivalence class --------------------------------
 ###############################################################################T
@@ -66,7 +58,7 @@ canonical_members_ranked <- input_data[["inchi_id_lspci_id_map"]] %>%
     input_data[["chembl_raw"]] %>%
       select(chembl_id, molregno, parent_molregno, n_assays, parental_flag, max_phase),
     all.x = TRUE,
-    by = c("vendor_id" = "chembl_id")
+    by.x = "vendor_id", by.y = "chembl_id"
   ) %>% {
     .[
       ,
