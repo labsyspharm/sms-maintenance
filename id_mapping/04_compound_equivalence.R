@@ -5,6 +5,7 @@ library(synapser)
 library(synExtra)
 library(igraph)
 library(qs)
+library(bit64)
 
 synLogin()
 syn <- synDownloader(here("tempdl"))
@@ -13,33 +14,29 @@ release <- "chembl_v27"
 dir_release <- here(release)
 syn_release <- synFindEntityId(release, "syn18457321")
 
+source(here("utils", "load_save.R"))
+
 # Loading files ----------------------------------------------------------------
 ###############################################################################T
 
-inputs <- c(
-  masses =  synPluck(syn_release, "id_mapping", "compound_masses.csv.gz"),
-  inchi_id_vendor_map = synPluck(syn_release, "canonicalization", "inchi_id_vendor_map.csv.gz"),
-  similarities = synPluck(syn_release, "id_mapping", "all_compounds_similarity.csv.gz"),
-  chembl_raw = synPluck(syn_release, "raw_data", "chembl_compounds_raw.rds"),
-  hmsl_raw = synPluck(syn_release, "raw_data", "hmsl_compounds_raw.rds"),
-  emolecules_suppliers = synPluck(syn_release, "id_mapping", "emolecules", "suppliers.tsv.gz"),
-  emolecules_vendor_info = synPluck(syn_release, "id_mapping", "emolecules", "emolecules_vendor_info.csv.gz"),
-  chembl_emolecules_map = synPluck(syn_release, "id_mapping", "unichem", "chembl_emolecules_mapping.csv.gz"),
-  old_sms = "syn21094266"
-)
+inputs <- list(
+  masses =  c("id_mapping", "compound_masses.csv.gz"),
+  inchi_id_vendor_map = c("canonicalization", "inchi_id_vendor_map.csv.gz"),
+  similarities = c("id_mapping", "all_compounds_similarity.csv.gz"),
+  chembl_raw = c("raw_data", "chembl_compounds_raw.rds"),
+  hmsl_raw = c("raw_data", "hmsl_compounds_raw.rds"),
+  emolecules_suppliers = c("id_mapping", "emolecules", "suppliers.tsv.gz"),
+  emolecules_vendor_info = c("id_mapping", "emolecules", "emolecules_vendor_info.csv.gz"),
+  chembl_emolecules_map = c("id_mapping", "unichem", "chembl_emolecules_mapping.csv.gz"),
+  fda_approval = c("raw_data", "lsp_FDA_first_approval_table.csv")
+) %>%
+  pluck_inputs(syn_parent = syn_release) %>%
+  c(
+    old_sms = "syn21094266"
+  )
 
 input_data <- inputs %>%
-  map(syn) %>%
-  map(
-    function(x)
-      list(
-        `.csv` = partial(fread, colClasses = c(inchi_id = "integer")),
-        `.tsv` = fread,
-        `.rds` = read_rds
-      ) %>%
-      magrittr::extract2(which(str_detect(x, fixed(names(.))))) %>%
-      {.(x)}
-  )
+  load_input_data(syn = syn)
 
 # https://stackoverflow.com/questions/15280472/in-r-how-do-i-create-consecutive-id-numbers-for-each-repetition-in-a-separate-v
 
@@ -259,28 +256,19 @@ identity_mapped <- identity_combined[
 ][
   ,
   .(
-    lspci_id = {
-      lspci_ids <- lspci_id %>%
-        na.omit() %>%
-        unique()
-      if (length(lspci_ids) != 1L) NA_integer_ else lspci_ids
-    },
-    inchi_id = {
-      inchi_ids <- inchi_id %>%
-        na.omit() %>%
-        unique()
-      if (length(inchi_ids) == 0L) NA_integer_ else inchi_ids
-    }
+    lspci_id = list(unique(na.omit(lspci_id))),
+    inchi_id = list(unique(na.omit(inchi_id)))
   ),
   keyby = identity_group
 ]
 
-fwrite(
+qsave(
   identity_mapped,
-  file.path(dir_release, "identity_mapped_raw.csv.gz")
+  file.path(dir_release, "identity_mapped_raw.qs"),
+  preset = "fast"
 )
 
-# identity_mapped <- fread(file.path(dir_release, "identity_mapped_raw.csv.gz"))
+# identity_mapped <- qread(file.path(dir_release, "identity_mapped_raw.qs"))
 
 #
 # inchis <- fread("chembl_v27/canonical_inchi_ids.csv.gz")
@@ -420,44 +408,144 @@ fwrite(
 # find using our canonicalization followed by fingerprint matching approach.
 
 # Augmenting identity map with data from the Chembl parent annotation
-chembl_cmpds_with_parent <- input_data[["chembl_raw"]] %>%
-  filter(molregno != parent_molregno) %>%
-  left_join(
-    input_data[["chembl_raw"]] %>%
-      select(molregno, parent_chembl_id = chembl_id),
-    by = c("parent_molregno" = "molregno")
-  ) %>%
-  select(molregno, chembl_id, parent_chembl_id) %>%
-  left_join(
-    input_data[["inchi_id_vendor_map"]][
-      , .(vendor_id, inchi_id)
-    ],
-    by = c("chembl_id" = "vendor_id")
-  ) %>%
-  left_join(
-    input_data[["inchi_id_vendor_map"]][
-      , .(vendor_id, inchi_id_parent = inchi_id)
-    ],
-    by = c("chembl_id" = "vendor_id")
-  )
-
-chembl_cmpds_with_parent %>% filter(inchi_id != inchi_id_parent)
+# chembl_cmpds_with_parent <- input_data[["chembl_raw"]] %>%
+#   filter(molregno != parent_molregno) %>%
+#   left_join(
+#     input_data[["chembl_raw"]] %>%
+#       select(molregno, parent_chembl_id = chembl_id),
+#     by = c("parent_molregno" = "molregno")
+#   ) %>%
+#   select(molregno, chembl_id, parent_chembl_id) %>%
+#   left_join(
+#     input_data[["inchi_id_vendor_map"]][
+#       , .(vendor_id, inchi_id)
+#     ],
+#     by = c("chembl_id" = "vendor_id")
+#   ) %>%
+#   left_join(
+#     input_data[["inchi_id_vendor_map"]][
+#       , .(vendor_id, inchi_id_parent = inchi_id)
+#     ],
+#     by = c("chembl_id" = "vendor_id")
+#   )
+#
+# chembl_cmpds_with_parent %>% filter(inchi_id != inchi_id_parent)
 
 # => 0 rows. That means we actually capture all compound-parent relationships
 # annotated in ChEMBL with our pipeline
+
+# Multiple lspci_ids -----------------------------------------------------------
+###############################################################################T
+# In cases with multiple lspci_ids,
+# checking which old lspci_id should be the canonical one
+
+identity_mapped_multiple <- identity_mapped[
+  map_int(lspci_id, length) > 1
+]
+
+qsave(
+  identity_mapped_multiple,
+  file.path(dir_release, "identity_mapped_multiple_lspci_ids.qs"),
+  preset = "fast"
+)
+
+identity_mapped_multiple_ranked <- identity_mapped_multiple %>%
+  select(identity_group, lspci_id) %>%
+  unchop(lspci_id) %>%
+  left_join(
+    input_data[["old_sms"]][
+      , .(lspci_id, chembl_id)
+    ],
+    by = "lspci_id"
+  ) %>%
+  drop_na(chembl_id) %>%
+  setDT() %>%
+  merge(
+    input_data[["chembl_raw"]] %>%
+      select(chembl_id, pref_name, molregno, parent_molregno, n_assays, parental_flag, max_phase),
+    all.x = TRUE,
+    by = "chembl_id"
+  ) %>% {
+    .[
+      ,
+      `:=`(
+        has_parent = if_else(parent_molregno != molregno, parent_molregno, NA_integer64_),
+        annotated_pref_name = !is.na(pref_name),
+        id_number = as.integer(str_extract(chembl_id, "\\d+"))
+      )
+    ][
+      ,
+      `:=`(
+        annotated_as_parent = molregno %in% has_parent
+      )
+    ][
+      order(
+        identity_group,
+        -max_phase,
+        -annotated_pref_name,
+        -annotated_as_parent,
+        -n_assays,
+        id_number
+      )
+    ][
+      ,
+      rank := seq_len(.N),
+      keyby = "identity_group"
+    ]
+  }
+
+identity_mapped_multiple_canonical <- identity_mapped_multiple_ranked[
+  rank == 1
+]
+
+identity_mapped_unique_lspci_id <- identity_mapped[
+  identity_mapped_multiple_canonical[
+    , .(identity_group, lspci_id)
+  ],
+  on = "identity_group"
+][
+  ,
+  lspci_id := if_else(
+    is.na(i.lspci_id),
+    map_int(lspci_id, 1),
+    i.lspci_id
+  )
+][
+  , .(identity_group, lspci_id, inchi_id)
+] %>%
+  unchop(inchi_id)
+
+# identity_mapped_multiple <- qread(file.path(dir_release, "identity_mapped_multiple_lspci_ids.qs"))
 
 # Adding equivalence class for all compounds -----------------------------------
 ###############################################################################T
 
 # Add eq_class for compounds for which no inchi is known or whose inchi is not parseable
 
-identity_mapped_additional <- identity_mapped %>%
+# First, combinding mapped cases where there was a unique lspci_id and where
+# there were multiple
+identity_mapped_all <- copy(identity_mapped)[
+  !identity_group %in% identity_mapped_unique_lspci_id[["identity_group"]]
+][
+  ,
+  lspci_id := map_int(lspci_id, ~if (length(.x) > 0) .x[[1]] else NA_integer_)
+] %>%
+  unchop(inchi_id) %>%
+  bind_rows(
+    identity_mapped_unique_lspci_id
+  ) %>%
+  setkey(identity_group)
+
+# Second, add cases where the inchi_ids were not able to be mapped succesfully
+# due to parsing issues
+identity_mapped_additional <- identity_mapped_all %>%
   bind_rows(
     {
       additional_inchis <- setdiff(
         input_data[["inchi_id_vendor_map"]][["inchi_id"]],
         .[["inchi_id"]]
-      )
+      ) %>%
+        na.omit()
       tibble(
         inchi_id = additional_inchis,
         identity_group = seq_along(additional_inchis) + max(.[["identity_group"]])
@@ -497,6 +585,30 @@ fwrite(
   file.path(dir_release, "lspci_id_compound_name_map.csv.gz")
 )
 
+# Mapping old and new lspci_ids
+
+lspci_id_map_previous_version <- identity_mapped %>%
+  select(identity_group, v25 = lspci_id) %>%
+  unchop(v25) %>%
+  full_join(
+    identity_mapped_additional %>%
+      select(identity_group, v27 = lspci_id),
+    by = "identity_group"
+  ) %>%
+  # Add unmapped old lspci_ids
+  bind_rows(
+    input_data[["old_sms"]][
+      !lspci_id %in% .[["v25"]],
+      .(v25 = lspci_id)
+    ]
+  ) %>%
+  setkey(v25, v27)
+
+fwrite(
+  lspci_id_map_previous_version,
+  file.path(dir_release, "previous_version_lspci_id_map.csv.gz")
+)
+
 # Store to synapse -------------------------------------------------------------
 ###############################################################################T
 
@@ -506,13 +618,12 @@ activity <- Activity(
   executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/id_mapping/04_compound_equivalence.R"
 )
 
-syn_id_mapping <- Folder("id_mapping", parent = syn_release) %>%
-  synStore() %>%
-  chuck("properties", "id")
+syn_id_mapping <- synMkdir(syn_release, "id_mapping")
 
 c(
-  file.path(dir_release, "lspci_id_compound_name_map.csv.gz"),
-  file.path(dir_release, "inchi_id_lspci_id_map.csv.gz")
+  # file.path(dir_release, "lspci_id_compound_name_map.csv.gz"),
+  # file.path(dir_release, "inchi_id_lspci_id_map.csv.gz"),
+  file.path(dir_release, "previous_version_lspci_id_map.csv.gz")
 ) %>%
   synStoreMany(parent = syn_id_mapping, activity = activity)
 
