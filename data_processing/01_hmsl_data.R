@@ -104,6 +104,8 @@ single_dose <- input_data[["inhouse_single_dose"]] %>%
     by = "hmsl_id"
   ) %>%
   rename(symbol = gene_symbol) %>%
+  # Two cases where no symbol is give, skipping
+  filter(symbol != "") %>%
   inner_join(
     input_data[["target_dictionary"]][
       ,
@@ -181,7 +183,7 @@ hmsl_activity <- Activity(
 syn_id_mapping <- synMkdir(syn_release, "raw_data", "hmsl")
 
 c(
-  here(release, "hmsl_doseresponse.csv.gz"),
+  # here(release, "hmsl_doseresponse.csv.gz"),
   here(release, "hmsl_singledose.csv.gz")
 ) %>%
   synStoreMany(parent = syn_id_mapping, activity = hmsl_activity)
