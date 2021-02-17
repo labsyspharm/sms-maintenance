@@ -106,11 +106,11 @@ single_dose_tas_agg <- single_dose_tas[
       cmpd_conc_nM
     )
   ],
-  by = .(lspci_id, entrez_gene_id)
+  by = .(lspci_id, entrez_gene_id, symbol)
 ][
   ,
   temp_tas_id := .GRP,
-  by = .(lspci_id, entrez_gene_id)
+  by = .(lspci_id, entrez_gene_id, symbol)
 ]
 
 combined_tas <- rbindlist(
