@@ -1,85 +1,73 @@
 library(tidyverse)
+library(data.table)
 library(here)
 library(synapser)
 library(synExtra)
 
 synLogin()
-syn <- synDownloader(here("tempdl"), ifcollision = "overwrite.local")
+syn <- synDownloader(here("tempdl"))
+
+source(here("utils", "load_save.R"))
 
 # set directories, import files ------------------------------------------------
 ###############################################################################T
-release <- "chembl_v25"
+
+release <- "chembl_v27"
 dir_release <- here(release)
 syn_release <- synFindEntityId(release, "syn18457321")
 
 # read tables ------------------------------------------------------------------
 ###############################################################################T
 
+# Function to replace empty strings with NA values
+replace_empty_string_na <- function(df) {
+  mutate(
+    df,
+    across(
+      where(is.character),
+      ~magrittr::inset(.x, .x == "", NA_character_)
+    )
+  )
+}
+
 # Dealing with target dictionary seperately because it does not depend
 # on the fingerprinting algo
 
+lsp_compound_dictionary <- synPluck(syn_release, "compounds_processed", "compound_dictionary.csv.gz") %>%
+  syn() %>%
+  fread() %>%
+  replace_empty_string_na() %>%
+  select(
+    lspci_id, hmsl_id, chembl_id, emolecules_id, pref_name,
+    inchi = canonical_inchi, commercially_available, highest_approval = max_phase
+  ) %>%
+  arrange(lspci_id)
+
 tables <- tribble(
-  ~name, ~synapse_id, ~used, ~sort_by, ~fun,
-  "lsp_compound_dictionary", "syn20835543", NULL, c("lspci_id"), function(x)
-    select(x, lspci_id, hmsl_id = hms_id, chembl_id, pref_name, inchi, smiles, commercially_available),
-  "lsp_biochem", "syn20830825", NULL, c("lspci_id", "gene_id"), function(x)
-    select(x, lspci_id, gene_id = entrez_gene_id, description_assay, value, value_unit, value_type, value_relation, reference_id, reference_type, url = file_url),
-  "lsp_compound_names", "syn22035396", NULL, NULL, function(x)
-    transmute(x, lspci_id, source = str_split_fixed(source, fixed("_"), 2)[, 1], priority = source_collapsed, name),
-  "lsp_compound_mapping", "syn20830516", NULL, c("lspci_id"), function(x)
-    transmute(x, lspci_id = eq_class, source = if_else(str_starts(id, fixed("CHEMBL")), "chembl", "hmsl"), id),
-  "lsp_phenotypic_chembl", "syn20976900", NULL, c("lspci_id", "assay_id"), function(x)
-    select(x, lspci_id, assay_id, description_assay, value, value_unit, value_type, value_relation, reference_id, reference_type, url = file_url),
-  "lsp_tas", "syn20830939", NULL, c("lspci_id", "gene_id"), function(x) select(x, lspci_id, gene_id = entrez_gene_id, tas),
-  "lsp_specificity", "syn20836653", NULL, c("lspci_id", "gene_id"), function(x)
-    distinct(
-      x, lspci_id, gene_id, selectivity_class, investigation_bias, strength,
-      wilcox_pval, selectivity, tool_score, IC50_difference = IC50_diff,
-      ontarget_IC50_Q1, offtarget_IC50_Q1, ontarget_N = ontarget_IC50_N, offtarget_N = offtarget_IC50_N
-    ) %>%
-    rename_all(str_to_lower),
-  "lsp_one_dose_scans", "syn20830835", NULL, c("lspci_id", "gene_id"), function(x)
-    transmute(
-      x, lspci_id, gene_id = entrez_gene_id, percent_control, description, concentration = cmpd_conc_nM,
-      reference_id, reference_type = recode(reference_type, synapse = "synapse_id", hms_lincs = "hmsl_id"),
-      url = file_url
-    ) %>%
-    distinct(),
-  # "lsp_tas_similarity", "syn21052803", NULL,
-  "lsp_clinical_info", "syn21064122", NULL, c("lspci_id"), function(x)
-    mutate_at(
-      x,
-      vars(oral, parenteral, topical, black_box_warning, first_in_class, prodrug, withdrawn_flag),
-      magrittr::equals, 1
-    ) %>%
-    distinct(
-      lspci_id, max_phase, first_approval, oral, parenteral, topical, black_box_warning,
-      first_in_class, prodrug, indication_class, withdrawn_flag, withdrawn_year, withdrawn_country,
-      withdrawn_reason, max_phase_for_indication, mesh_id, mesh_heading, efo_id, efo_term,
-      reference_type = ref_type, reference_id = ref_id, url = ref_url
+  ~name, ~synapse_path, ~used, ~sort_by, ~fun,
+  "lsp_compound_dictionary",
+    c("compounds_processed", "compound_dictionary.csv.gz"),
+    NULL,
+    c("lspci_id"),
+    function(x) select(
+      x, lspci_id, hmsl_id, chembl_id, emolecules_id, pref_name,
+      inchi = canonical_inchi, commercially_available, highest_approval = max_phase
     ),
-  "lsp_commercial_availability", "syn21049601", NULL, c("lspci_id"), function(x)
-    distinct(x, lspci_id, vendor, id = vendor_id, name = vendor_name),
-  "lsp_fingerprints", "syn21042105", NULL, c("lspci_id", "fingerprint_type"), function(x)
-    select(x, lspci_id, fingerprint_type = fp_name, fingerprint),
-  "lsp_compound_library", "syn22153734", NULL, c("lspci_id", "gene_id"), function(x)
-    select(x, lspci_id, gene_id, rank, reason_included)
+  "lsp_compound_names",
+    c("compounds_processed", "")
 )
 
 tables_dl <- tables %>%
   mutate(
-    data = map(
-      synapse_id,
-      . %>%
-        syn() %>%
-        read_rds()
-    )
+    synapse_id = pluck_inputs(synapse_path, syn_parent = syn_release),
+    data = load_input_data(synapse_id, syn = syn)
   )
 
 process_table <- function(data, fun, sort_by, ...) {
+  browser()
   data %>%
-    mutate_at(vars(data), map, fun) %>%
-    mutate_at(vars(data), map, arrange, !!!rlang::syms(sort_by))
+    fun() %>%
+    arrange(!!!rlang::syms(sort_by))
 }
 
 tables_formatted <- tables_dl %>%
