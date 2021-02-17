@@ -12,6 +12,8 @@ syn <- synDownloader(here("tempdl"))
 
 `%nin%` <- Negate(`%in%`)
 
+source(here("utils", "load_save.R"))
+
 # set directories, import files ------------------------------------------------
 ###############################################################################T
 
@@ -22,25 +24,10 @@ syn_release <- synFindEntityId(release, "syn18457321")
 inputs <- list(
   dose_response_measurements = c("aggregate_data", "dose_response_measurements.csv.gz")
 ) %>%
-  map(~exec(synPluck, !!!c(syn_release, .x)))
+  pluck_inputs(syn_parent = syn_release)
 
 input_data <- inputs %>%
-  map(syn) %>%
-  map(
-    function(x)
-      list(
-        `.csv` = partial(
-          fread,
-          colClasses = c(
-            lspci_id = "integer"
-          )
-        ),
-        `.tsv` = fread,
-        `.rds` = read_rds
-      ) %>%
-      magrittr::extract2(which(str_detect(x, fixed(names(.))))) %>%
-      {.(x)}
-  )
+  load_input_data(syn = syn)
 
 # set toolscore function -------------------------------------------------------
 ###############################################################################T
@@ -149,8 +136,7 @@ toolscore.b <- input_data[["dose_response_measurements"]][
     iterate_targets,
     .options = furrr_options(
       scheduling = 1000L
-    ),
-    .progress = TRUE
+    )
   )
 ]
 

@@ -11,6 +11,8 @@ release <- "chembl_v27"
 dir_release <- here(release)
 syn_release <- synFindEntityId(release, "syn18457321")
 
+source(here("utils", "load_save.R"))
+
 # Loading files ----------------------------------------------------------------
 ###############################################################################T
 
@@ -26,18 +28,7 @@ inputs <- inputs <- list(
 
 
 input_data <- inputs %>%
-  map(syn) %>%
-  map(
-    function(x)
-      list(
-        `.csv` = partial(fread, colClasses = c(inchi_id = "integer")),
-        `.tsv` = fread,
-        `.rds` = read_rds,
-        `.xlsx` = openxlsx::read.xlsx
-      ) %>%
-      magrittr::extract2(which(str_detect(x, fixed(names(.))))) %>%
-      {.(x)}
-  )
+  load_input_data(syn = syn)
 
 # Compile data -----------------------------------------------------------------
 ###############################################################################T

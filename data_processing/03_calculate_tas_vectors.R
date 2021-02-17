@@ -14,6 +14,8 @@ release <- "chembl_v27"
 dir_release <- here(release)
 syn_release <- synFindEntityId(release, "syn18457321")
 
+source(here("utils", "load_save.R"))
+
 # Set directories, import files ------------------------------------------------
 ###############################################################################T
 
@@ -39,25 +41,10 @@ inputs <- c(
       literature_annotations = c("raw_data", "literature_annotations", "literature_annotations.csv.gz")
     )
   ) %>%
-    map(~exec(synPluck, !!!c(syn_release, .x)))
+    pluck_inputs(syn_parent = syn_release)
 
 input_data <- inputs %>%
-  map(syn) %>%
-  map(
-    function(x)
-      list(
-        `.csv` = partial(
-          fread,
-          colClasses = c(
-            lspci_id = "integer"
-          )
-        ),
-        `.tsv` = fread,
-        `.rds` = read_rds
-      ) %>%
-      magrittr::extract2(which(str_detect(x, fixed(names(.))))) %>%
-      {.(x)}
-  )
+  load_input_data(syn = syn)
 
 # calculate TAS ----------------------------------------------------------------
 ###############################################################################T

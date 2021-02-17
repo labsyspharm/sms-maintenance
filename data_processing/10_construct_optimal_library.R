@@ -1,6 +1,5 @@
 library(tidyverse)
 library(here)
-library(furrr)
 library(morgancpp)
 library(synapser)
 library(synExtra)

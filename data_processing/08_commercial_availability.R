@@ -7,6 +7,7 @@ library(here)
 synLogin()
 syn <- synDownloader(here("tempdl"))
 
+source(here("utils", "load_save.R"))
 
 # Set directories, import files ------------------------------------------------
 ###############################################################################T
@@ -20,26 +21,10 @@ inputs <- list(
   emolecules_vendor_info = c("id_mapping", "emolecules", "emolecules_vendor_info.csv.gz"),
   emolecules_supplier_info = c("id_mapping", "emolecules", "suppliers.tsv.gz")
 ) %>%
-  map(~exec(synPluck, !!!c(syn_release, .x)))
+  pluck_inputs(syn_parent = syn_release)
 
 input_data <- inputs %>%
-  map(syn) %>%
-  map(
-    function(x)
-      list(
-        `.csv` = partial(
-          fread,
-          colClasses = c(
-            lspci_id = "integer"
-          )
-        ),
-        `.tsv` = fread,
-        `.rds` = read_rds
-      ) %>%
-      magrittr::extract2(which(str_detect(x, fixed(names(.))))) %>%
-      {.(x)}
-  )
-
+  load_input_data(syn = syn)
 
 # Map Emolecules compounds to lspci_id -----------------------------------------
 ###############################################################################T
@@ -82,9 +67,7 @@ wrangle_activity <- Activity(
   executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/data_processing/08_commercial_availability.R"
 )
 
-syn_vendors <- Folder("vendors", parent = syn_release) %>%
-  synStore() %>%
-  chuck("properties", "id")
+syn_vendors <- synMkdir(syn_release, "vendors")
 
 c(
   file.path(dir_release, "lspci_id_compound_commercial_info.csv.gz")

@@ -9,6 +9,7 @@ library(data.table)
 synLogin()
 syn <- synDownloader(here("tempdl"))
 
+source(here("utils", "load_save.R"))
 
 # Set directories, import files ------------------------------------------------
 ###############################################################################T
@@ -18,23 +19,13 @@ syn_release <- synFindEntityId(release, "syn18457321")
 
 
 inputs <- list(
-  all_fp = synPluck(syn_release, "fingerprints", "all_compounds_fingerprints.csv.gz"),
-  canonical_members = synPluck(syn_release, "compounds_processed", "lspci_id_canonical_members.csv.gz")
-)
+  all_fp = c("fingerprints", "all_compounds_fingerprints.csv.gz"),
+  canonical_members = c("compounds_processed", "lspci_id_canonical_members.csv.gz")
+) %>%
+  pluck_inputs(syn_parent = syn_release)
 
 input_data <- inputs %>%
-  map(syn) %>%
-  map(
-    function(x)
-      list(
-        `.csv` = partial(fread, colClasses = c(inchi_id = "integer")),
-        `.tsv` = fread,
-        `.rds` = read_rds
-      ) %>%
-      magrittr::extract2(which(str_detect(x, fixed(names(.))))) %>%
-      {.(x)}
-  )
-
+  load_input_data(syn = syn)
 
 # Prepare fingerprint database -------------------------------------------------
 ###############################################################################T

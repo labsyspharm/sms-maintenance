@@ -1,6 +1,7 @@
 library(tidyverse)
 library(data.table)
 library(qs)
+library(openxlsx)
 library(synapser)
 
 
@@ -21,7 +22,8 @@ load_input_data <- function(inputs, syn) {
           `.csv` = fread,
           `.tsv` = fread,
           `.rds` = read_rds,
-          `.qs` = qread
+          `.qs` = qread,
+          `.xlsx` = read.xlsx
         ) %>%
         magrittr::extract2(which(str_detect(x, fixed(names(.))))) %>% {
           df <- .(x)

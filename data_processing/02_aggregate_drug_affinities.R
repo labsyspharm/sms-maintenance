@@ -12,6 +12,7 @@ release <- "chembl_v27"
 dir_release <- here(release)
 syn_release <- synFindEntityId(release, "syn18457321")
 
+source(here("utils", "load_save.R"))
 
 # Set directories, import files ------------------------------------------------
 ###############################################################################T
@@ -26,25 +27,10 @@ inputs <- list(
   inhouse_single_dose = c("raw_data", "hmsl", "hmsl_singledose.csv.gz"),
   chembl_references_best = c("raw_data", "chembl", "chembl_ref_info_best_source.csv.gz")
 ) %>%
-  map(~exec(synPluck, !!!c(syn_release, .x)))
+  pluck_inputs(syn_parent = syn_release)
 
 input_data <- inputs %>%
-  map(syn) %>%
-  map(
-    function(x)
-      list(
-        `.csv` = partial(
-          fread,
-          colClasses = c(
-            lspci_id = "integer"
-          )
-        ),
-        `.tsv` = fread,
-        `.rds` = read_rds
-      ) %>%
-      magrittr::extract2(which(str_detect(x, fixed(names(.))))) %>%
-      {.(x)}
-  )
+  load_input_data(syn = syn)
 
 # Clean up raw ChEMBL data -----------------------------------------------------
 ###############################################################################T
@@ -92,7 +78,7 @@ biochem_rowbind <- biochem_neat %>%
     value_type = standard_type,
     value_relation = standard_relation,
     description_assay = description,
-    reference_type, reference_id,
+    reference_type, reference_id = reference_value,
     measurement_source = "chembl_activity",
     external_measurement_id = as.character(activity_id)
   )
@@ -103,7 +89,7 @@ doseresponse_inhouse_rowbind <- dose_response_inhouse_neat %>%
     entrez_gene_id, symbol,
     value, value_unit, value_type,
     value_relation, description_assay = description,
-    reference_type, reference_id,
+    reference_type, reference_id = reference_value,
     measurement_source = "inhouse_doseresponse",
     external_measurement_id = synapse_id
   )
@@ -195,7 +181,7 @@ fwrite(
 single_dose_data <- input_data[["inhouse_single_dose"]] %>%
   distinct(
     lspci_id, entrez_gene_id, symbol, cmpd_conc_nM,
-    percent_control, reference_type, reference_id
+    percent_control, reference_type, reference_id = reference_value,
   ) %>%
   mutate(
     measurement_source = "inhouse_single_dose",
@@ -287,7 +273,7 @@ pheno_data_neat <- input_data[["chembl_phenotypic"]] %>%
     value_type = standard_type,
     value_relation = standard_relation,
     description_assay = description,
-    reference_type, reference_id,
+    reference_type, reference_id = reference_value,
     measurement_source = "chembl_activity",
     external_measurement_id = as.character(activity_id)
   ) %>%
