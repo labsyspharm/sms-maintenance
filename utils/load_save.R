@@ -36,7 +36,7 @@ load_input_data <- function(inputs, syn) {
 }
 
 pluck_inputs <- function(inputs, syn_parent) {
-  map(
+  map_chr(
     inputs,
     ~exec(synPluck, !!!c(syn_parent, .x))
   )
