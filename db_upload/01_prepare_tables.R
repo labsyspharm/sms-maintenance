@@ -515,22 +515,36 @@ pwalk(
 # Import to PostgreSQL ---------------------------------------------------------
 ###############################################################################T
 
-dir.create(file.path(dir_release, "db_upload"), showWarnings = FALSE)
+pwalk(
+  tables,
+  function(name, table, path, ...) {
+    # message("Uploading ", name)
+    paste0(
+      "gunzip -cd ", path, " | psql --command=\"COPY ", name, " (", paste("\"", colnames(table), "\"", sep = "", collapse = ", "), ")",
+      " FROM STDIN CSV HEADER NULL 'NULL';\" sms_27"
+    ) %>%
+      message()
+  }
+)
 
-synChildren("syn20981961") %>%
-  magrittr::extract(str_ends(names(.), fixed(".csv.gz"))) %>%
-  walk(synGet, downloadLocation = file.path(dir_release, "db_upload"), ifcollision = "overwrite.local")
-
-list.files(file.path(dir_release, "db_upload"), full.names = TRUE) %>%
-  walk(
-    function(path, ...) {
-      name <- str_sub(basename(path), end = -8L)
-      colnames <- read.csv(path, nrows = 1)
-      paste0(
-        "gunzip -cd ", path, " | psql --command=\"COPY ", name, " (", paste("\"", names(colnames), "\"", sep = "", collapse = ", "), ")",
-        " FROM STDIN CSV HEADER NULL 'NA';\" sms_db"
-      ) %>%
-        message()
-    }
-  )
-
+# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_compound_dictionary.csv.gz | psql --command="COPY lsp_compound_dictionary ("lspci_id", "hmsl_id", "chembl_id", "emolecules_id", "pref_name", "inchi", "commercially_available", "highest_approval") FROM STDIN CSV HEADER NULL 'NULL';" sms_27
+# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_structures.csv.gz | psql --command="COPY lsp_structures ("lspci_id", "source", "rank", "inchi") FROM STDIN CSV HEADER NULL 'NULL';" sms_27
+# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_compound_names.csv.gz | psql --command="COPY lsp_compound_names ("lspci_id", "source", "priority", "name") FROM STDIN CSV HEADER NULL 'NULL';" sms_27
+# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_compound_mapping.csv.gz | psql --command="COPY lsp_compound_mapping ("lspci_id", "source", "external_id") FROM STDIN CSV HEADER NULL 'NULL';" sms_27
+# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_target_dictionary.csv.gz | psql --command="COPY lsp_target_dictionary ("gene_id", "symbol", "pref_name", "tax_id", "organism") FROM STDIN CSV HEADER NULL 'NULL';" sms_27
+# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_target_mapping.csv.gz | psql --command="COPY lsp_target_mapping ("gene_id", "chembl_id", "uniprot_id", "target_type") FROM STDIN CSV HEADER NULL 'NULL';" sms_27
+# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_references.csv.gz | psql --command="COPY lsp_references ("reference_id", "reference_type", "reference_value", "url") FROM STDIN CSV HEADER NULL 'NULL';" sms_27
+# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_biochem.csv.gz | psql --command="COPY lsp_biochem ("biochem_id", "biochem_agg_id", "lspci_id", "gene_id", "symbol", "source", "description_assay", "value", "value_type", "value_unit", "value_relation", "reference_id") FROM STDIN CSV HEADER NULL 'NULL';" sms_27
+# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_biochem_agg.csv.gz | psql --command="COPY lsp_biochem_agg ("biochem_agg_id", "lspci_id", "gene_id", "symbol", "value", "value_unit", "tas_id") FROM STDIN CSV HEADER NULL 'NULL';" sms_27
+# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_phenotypic.csv.gz | psql --command="COPY lsp_phenotypic ("phenotypic_id", "lspci_id", "assay_id", "value", "value_type", "value_unit", "description_assay", "reference_id", "phenotypic_agg_id") FROM STDIN CSV HEADER NULL 'NULL';" sms_27
+# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_phenotypic_agg.csv.gz | psql --command="COPY lsp_phenotypic_agg ("phenotypic_agg_id", "lspci_id", "assay_id", "value", "value_unit") FROM STDIN CSV HEADER NULL 'NULL';" sms_27
+# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_tas.csv.gz | psql --command="COPY lsp_tas ("tas_id", "lspci_id", "gene_id", "symbol", "tas", "derived_from") FROM STDIN CSV HEADER NULL 'NULL';" sms_27
+# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_tas_references.csv.gz | psql --command="COPY lsp_tas_references ("tas_id", "reference_id") FROM STDIN CSV HEADER NULL 'NULL';" sms_27
+# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_manual_curation.csv.gz | psql --command="COPY lsp_manual_curation ("lspci_id", "gene_id", "symbol", "reference_id", "tas_id") FROM STDIN CSV HEADER NULL 'NULL';" sms_27
+# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_selectivity.csv.gz | psql --command="COPY lsp_selectivity ("lspci_id", "gene_id", "selectivity_class", "investigation_bias", "strength", "wilcox_pval", "selectivity", "tool_score", "ic50_difference", "ontarget_ic50_q1", "offtarget_ic50_q1", "ontarget_n", "offtarget_n") FROM STDIN CSV HEADER NULL 'NULL';" sms_27
+# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_one_dose_scans.csv.gz | psql --command="COPY lsp_one_dose_scans ("one_dose_scan_id", "one_dose_scan_agg_id", "lspci_id", "gene_id", "symbol", "source", "percent_control", "concentration", "reference_id") FROM STDIN CSV HEADER NULL 'NULL';" sms_27
+# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_one_dose_scan_agg.csv.gz | psql --command="COPY lsp_one_dose_scan_agg ("one_dose_scan_agg_id", "lspci_id", "gene_id", "symbol", "percent_control", "concentration", "value_unit", "tas_id") FROM STDIN CSV HEADER NULL 'NULL';" sms_27
+# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_clinical_info.csv.gz | psql --command="COPY lsp_clinical_info ("lspci_id", "max_phase", "first_approval", "oral", "parenteral", "topical", "black_box_warning", "first_in_class", "prodrug", "indication_class", "withdrawn_flag", "withdrawn_year", "withdrawn_country", "withdrawn_reason") FROM STDIN CSV HEADER NULL 'NULL';" sms_27
+# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_commercial_availability.csv.gz | psql --command="COPY lsp_commercial_availability ("lspci_id", "emolecules_id", "vendor", "catalog_number", "tier") FROM STDIN CSV HEADER NULL 'NULL';" sms_27
+# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_fingerprints.csv.gz | psql --command="COPY lsp_fingerprints ("lspci_id", "fingerprint_type", "fingerprint") FROM STDIN CSV HEADER NULL 'NULL';" sms_27
+# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_compound_library.csv.gz | psql --command="COPY lsp_compound_library ("lspci_id", "gene_id", "rank", "reason_included") FROM STDIN CSV HEADER NULL 'NULL';" sms_27

@@ -1,6 +1,6 @@
 -- SQL dump generated using DBML (dbml-lang.org)
 -- Database: PostgreSQL
--- Generated at: 2021-02-18T04:35:01.123Z
+-- Generated at: 2021-02-18T05:03:15.473Z
 
 CREATE TYPE "approval_tiers" AS ENUM (
   '0',
@@ -173,7 +173,7 @@ CREATE TABLE "lsp_biochem" (
   "value_type" biochem_value_types,
   "value_unit" biochem_value_units,
   "value_relation" biochem_value_relations,
-  "reference_id" varchar
+  "reference_id" int
 );
 
 CREATE TABLE "lsp_biochem_agg" (
@@ -194,7 +194,7 @@ CREATE TABLE "lsp_phenotypic" (
   "value_type" varchar,
   "value_unit" biochem_value_units,
   "description_assay" varchar,
-  "reference_id" varchar,
+  "reference_id" int,
   "phenotypic_agg_id" int
 );
 
@@ -223,7 +223,7 @@ CREATE TABLE "lsp_tas_references" (
 CREATE TABLE "lsp_manual_curation" (
   "lspci_id" int,
   "gene_id" int,
-  "reference_id" varchar,
+  "reference_id" int,
   "tas_id" int
 );
 
@@ -255,12 +255,12 @@ CREATE TABLE "lsp_one_dose_scans" (
 );
 
 CREATE TABLE "lsp_one_dose_scan_agg" (
+  "one_dose_scan_agg_id" int PRIMARY KEY,
   "lspci_id" int,
   "gene_id" int,
   "symbol" varchar,
   "percent_control" float,
-  "concentration" float,
-  "one_dose_scan_agg_id" int
+  "concentration" float
 );
 
 CREATE TABLE "lsp_clinical_info" (
@@ -355,11 +355,11 @@ ALTER TABLE "lsp_one_dose_scans" ADD FOREIGN KEY ("lspci_id") REFERENCES "lsp_co
 
 ALTER TABLE "lsp_one_dose_scans" ADD FOREIGN KEY ("gene_id") REFERENCES "lsp_target_dictionary" ("gene_id");
 
+ALTER TABLE "lsp_one_dose_scans" ADD FOREIGN KEY ("one_dose_scan_agg_id") REFERENCES "lsp_one_dose_scan_agg" ("one_dose_scan_agg_id");
+
 ALTER TABLE "lsp_one_dose_scan_agg" ADD FOREIGN KEY ("lspci_id") REFERENCES "lsp_compound_dictionary" ("lspci_id");
 
 ALTER TABLE "lsp_one_dose_scan_agg" ADD FOREIGN KEY ("gene_id") REFERENCES "lsp_target_dictionary" ("gene_id");
-
-ALTER TABLE "lsp_one_dose_scan_agg" ADD FOREIGN KEY ("one_dose_scan_agg_id") REFERENCES "lsp_one_dose_scans" ("one_dose_scan_agg_id");
 
 ALTER TABLE "lsp_clinical_info" ADD FOREIGN KEY ("lspci_id") REFERENCES "lsp_compound_dictionary" ("lspci_id");
 
@@ -693,7 +693,7 @@ COMMENT ON COLUMN "lsp_selectivity"."offtarget_n" IS 'Number of offtarget IC50 m
 
 COMMENT ON TABLE "lsp_one_dose_scans" IS 'Table of single dose compound activity measurements as     opposed to full dose-response affinity measurements.';
 
-COMMENT ON COLUMN "lsp_one_dose_scans"."one_dose_scan_id" IS 'All measurements with this ID in lsp_one_dose_scan_agg were aggregated.';
+COMMENT ON COLUMN "lsp_one_dose_scans"."one_dose_scan_id" IS 'Primary key for single dose measurements';
 
 COMMENT ON COLUMN "lsp_one_dose_scans"."lspci_id" IS 'Foreign key for compound ID';
 
@@ -707,11 +707,13 @@ COMMENT ON COLUMN "lsp_one_dose_scans"."concentration" IS 'Concentration of the 
 
 COMMENT ON COLUMN "lsp_one_dose_scans"."reference_id" IS 'The reference for the measurement.';
 
-COMMENT ON COLUMN "lsp_one_dose_scans"."one_dose_scan_agg_id" IS 'All measurements with this ID in lsp_one_dose_scan_agg were aggregated.';
+COMMENT ON COLUMN "lsp_one_dose_scans"."one_dose_scan_agg_id" IS 'Foreign key to lsp_phenotypic_agg table. All measurements with the same ID are aggregated.';
 
 COMMENT ON TABLE "lsp_one_dose_scan_agg" IS 'Table of single dose compound activity measurements as     opposed to full dose-response affinity measurements.
 All available data for a single concentration and compound target pair were
 aggregated by taking the first quartile.';
+
+COMMENT ON COLUMN "lsp_one_dose_scan_agg"."one_dose_scan_agg_id" IS 'All measurements with this ID in lsp_one_dose_scans were aggregated.';
 
 COMMENT ON COLUMN "lsp_one_dose_scan_agg"."lspci_id" IS 'Foreign key for compound ID';
 
@@ -722,8 +724,6 @@ COMMENT ON COLUMN "lsp_one_dose_scan_agg"."symbol" IS 'Gene symbol';
 COMMENT ON COLUMN "lsp_one_dose_scan_agg"."percent_control" IS 'Aggregated remaining activity of target at the given compound concentration.';
 
 COMMENT ON COLUMN "lsp_one_dose_scan_agg"."concentration" IS 'Concentration of the compound in the assay.';
-
-COMMENT ON COLUMN "lsp_one_dose_scan_agg"."one_dose_scan_agg_id" IS 'Foreign key to lsp_one_dose_scans table. All measurements with the same ID are aggregated.';
 
 COMMENT ON TABLE "lsp_clinical_info" IS 'Table of the clinical approval status of compounds.     Sourced from ChEMBL';
 

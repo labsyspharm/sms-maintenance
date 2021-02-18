@@ -249,7 +249,7 @@ Table lsp_biochem {
   value_relation biochem_value_relations [
     note:"Some assays can''t determine the measured value precisely. This column gives relationship between the actual and the measured value."
   ]
-  reference_id varchar [
+  reference_id int [
     ref: > lsp_references.reference_id,
     note:"Foreing key to the ls_reference table for this measurement."
   ]
@@ -314,7 +314,7 @@ Table lsp_phenotypic {
   value_type varchar [note:"The type of measurement performed."]
   value_unit biochem_value_units [note:"The unit of the measurement."]
   description_assay varchar [note:"Description of the assay."]
-  reference_id varchar [
+  reference_id int [
     ref: > lsp_references.reference_id,
     note:"Foreing key to the ls_reference table for this measurement."
   ]
@@ -428,7 +428,7 @@ Table lsp_manual_curation {
     ref: > lsp_target_dictionary.gene_id,
     note:"Foreign key for gene ID"
   ]
-  reference_id varchar [
+  reference_id int [
     ref: > lsp_references.reference_id,
     note:"Foreing key to the ls_reference table for this measurement."
   ]
@@ -495,7 +495,7 @@ Table lsp_selectivity {
 Table lsp_one_dose_scans {
   one_dose_scan_id int [
     pk,
-    note:"All measurements with this ID in lsp_one_dose_scan_agg were aggregated."
+    note:"Primary key for single dose measurements"
   ]
   lspci_id int [
     ref: > lsp_compound_dictionary.lspci_id,
@@ -510,7 +510,8 @@ Table lsp_one_dose_scans {
   concentration float [note:"Concentration of the compound in the assay."]
   reference_id varchar [note:"The reference for the measurement."]
   one_dose_scan_agg_id int [
-    note:"All measurements with this ID in lsp_one_dose_scan_agg were aggregated."
+    ref: > lsp_one_dose_scan_agg.one_dose_scan_agg_id,
+    note:"Foreign key to lsp_phenotypic_agg table. All measurements with the same ID are aggregated."
   ]
 
   Note:'''
@@ -527,6 +528,10 @@ Table lsp_one_dose_scans {
 }
 
 Table lsp_one_dose_scan_agg {
+  one_dose_scan_agg_id int [
+    pk,
+    note:"All measurements with this ID in lsp_one_dose_scans were aggregated."
+  ]
   lspci_id int [
     ref: > lsp_compound_dictionary.lspci_id,
     note:"Foreign key for compound ID"
@@ -538,10 +543,6 @@ Table lsp_one_dose_scan_agg {
   symbol varchar [note:"Gene symbol"]
   percent_control float [note:"Aggregated remaining activity of target at the given compound concentration."]
   concentration float [note:"Concentration of the compound in the assay."]
-  one_dose_scan_agg_id int [
-    ref: > lsp_one_dose_scans.one_dose_scan_agg_id,
-    note:"Foreign key to lsp_one_dose_scans table. All measurements with the same ID are aggregated."
-  ]
 
   Note:'''
     Table of single dose compound activity measurements as \
@@ -668,4 +669,3 @@ Table lsp_compound_library {
     (lspci_id, gene_id)
   }
 }
-
