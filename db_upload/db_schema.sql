@@ -1,6 +1,6 @@
 -- SQL dump generated using DBML (dbml-lang.org)
 -- Database: PostgreSQL
--- Generated at: 2021-02-17T14:54:09.437Z
+-- Generated at: 2021-02-18T04:35:01.123Z
 
 CREATE TYPE "approval_tiers" AS ENUM (
   '0',
@@ -18,7 +18,8 @@ CREATE TYPE "name_priorities" AS ENUM (
 CREATE TYPE "compound_sources" AS ENUM (
   'chembl',
   'hmsl',
-  'emolecules'
+  'emolecules',
+  'old_sms'
 );
 
 CREATE TYPE "target_types" AS ENUM (
@@ -71,6 +72,11 @@ CREATE TYPE "reference_types" AS ENUM (
   'hmsl_id'
 );
 
+CREATE TYPE "measurement_sources" AS ENUM (
+  'chembl',
+  'lsp'
+);
+
 CREATE TYPE "binding_data_types" AS ENUM (
   'dose_response',
   'single_dose',
@@ -113,6 +119,13 @@ CREATE TABLE "lsp_compound_dictionary" (
   "highest_approval" approval_tiers
 );
 
+CREATE TABLE "lsp_structures" (
+  "lspci_id" int,
+  "source" compound_sources,
+  "rank" int,
+  "inchi" varchar
+);
+
 CREATE TABLE "lsp_compound_names" (
   "lspci_id" int,
   "source" compound_sources,
@@ -129,14 +142,13 @@ CREATE TABLE "lsp_compound_mapping" (
 CREATE TABLE "lsp_target_dictionary" (
   "gene_id" int PRIMARY KEY,
   "symbol" varchar,
-  "description" varchar,
+  "pref_name" varchar,
   "tax_id" int,
   "organism" varchar
 );
 
 CREATE TABLE "lsp_target_mapping" (
   "gene_id" int,
-  "pref_name" varchar,
   "chembl_id" varchar,
   "uniprot_id" varchar,
   "target_type" target_types
@@ -154,6 +166,8 @@ CREATE TABLE "lsp_biochem" (
   "biochem_agg_id" int,
   "lspci_id" int,
   "gene_id" int,
+  "symbol" varchar,
+  "source" compound_sources,
   "description_assay" varchar,
   "value" float,
   "value_type" biochem_value_types,
@@ -166,6 +180,7 @@ CREATE TABLE "lsp_biochem_agg" (
   "biochem_agg_id" int PRIMARY KEY,
   "lspci_id" int,
   "gene_id" int,
+  "symbol" varchar,
   "value" float,
   "value_unit" biochem_value_units,
   "tas_id" int
@@ -188,20 +203,19 @@ CREATE TABLE "lsp_phenotypic_agg" (
   "lspci_id" int,
   "assay_id" int,
   "value" float,
-  "value_type" varchar,
-  "value_unit" biochem_value_units,
-  "tas_id" int
+  "value_unit" biochem_value_units
 );
 
 CREATE TABLE "lsp_tas" (
   "tas_id" int PRIMARY KEY,
   "lspci_id" int,
   "gene_id" int,
+  "symbol" varchar,
   "tas" int,
   "derived_from" binding_data_types
 );
 
-CREATE TABLE "tas_references" (
+CREATE TABLE "lsp_tas_references" (
   "tas_id" int,
   "reference_id" int
 );
@@ -213,7 +227,7 @@ CREATE TABLE "lsp_manual_curation" (
   "tas_id" int
 );
 
-CREATE TABLE "lsp_specificity" (
+CREATE TABLE "lsp_selectivity" (
   "lspci_id" int,
   "gene_id" int,
   "selectivity_class" selectivity_classes,
@@ -233,20 +247,20 @@ CREATE TABLE "lsp_one_dose_scans" (
   "one_dose_scan_id" int PRIMARY KEY,
   "lspci_id" int,
   "gene_id" int,
+  "symbol" varchar,
   "percent_control" float,
-  "description" varchar,
   "concentration" float,
   "reference_id" varchar,
-  "reference_type" reference_types,
-  "url" varchar
+  "one_dose_scan_agg_id" int
 );
 
 CREATE TABLE "lsp_one_dose_scan_agg" (
   "lspci_id" int,
   "gene_id" int,
+  "symbol" varchar,
   "percent_control" float,
   "concentration" float,
-  "one_dose_scan_id" int
+  "one_dose_scan_agg_id" int
 );
 
 CREATE TABLE "lsp_clinical_info" (
@@ -268,9 +282,9 @@ CREATE TABLE "lsp_clinical_info" (
 
 CREATE TABLE "lsp_commercial_availability" (
   "lspci_id" int,
+  "emolecules_id" int,
   "vendor" varchar,
   "catalog_number" varchar,
-  "name" varchar,
   "tier" commercial_tiers
 );
 
@@ -286,6 +300,8 @@ CREATE TABLE "lsp_compound_library" (
   "rank" int,
   "reason_included" include_reasons
 );
+
+ALTER TABLE "lsp_structures" ADD FOREIGN KEY ("lspci_id") REFERENCES "lsp_compound_dictionary" ("lspci_id");
 
 ALTER TABLE "lsp_compound_names" ADD FOREIGN KEY ("lspci_id") REFERENCES "lsp_compound_dictionary" ("lspci_id");
 
@@ -315,15 +331,13 @@ ALTER TABLE "lsp_phenotypic" ADD FOREIGN KEY ("phenotypic_agg_id") REFERENCES "l
 
 ALTER TABLE "lsp_phenotypic_agg" ADD FOREIGN KEY ("lspci_id") REFERENCES "lsp_compound_dictionary" ("lspci_id");
 
-ALTER TABLE "lsp_phenotypic_agg" ADD FOREIGN KEY ("tas_id") REFERENCES "lsp_tas" ("tas_id");
-
 ALTER TABLE "lsp_tas" ADD FOREIGN KEY ("lspci_id") REFERENCES "lsp_compound_dictionary" ("lspci_id");
 
 ALTER TABLE "lsp_tas" ADD FOREIGN KEY ("gene_id") REFERENCES "lsp_target_dictionary" ("gene_id");
 
-ALTER TABLE "tas_references" ADD FOREIGN KEY ("tas_id") REFERENCES "lsp_tas" ("tas_id");
+ALTER TABLE "lsp_tas_references" ADD FOREIGN KEY ("tas_id") REFERENCES "lsp_tas" ("tas_id");
 
-ALTER TABLE "tas_references" ADD FOREIGN KEY ("reference_id") REFERENCES "lsp_references" ("reference_id");
+ALTER TABLE "lsp_tas_references" ADD FOREIGN KEY ("reference_id") REFERENCES "lsp_references" ("reference_id");
 
 ALTER TABLE "lsp_manual_curation" ADD FOREIGN KEY ("lspci_id") REFERENCES "lsp_compound_dictionary" ("lspci_id");
 
@@ -333,9 +347,9 @@ ALTER TABLE "lsp_manual_curation" ADD FOREIGN KEY ("reference_id") REFERENCES "l
 
 ALTER TABLE "lsp_manual_curation" ADD FOREIGN KEY ("tas_id") REFERENCES "lsp_tas" ("tas_id");
 
-ALTER TABLE "lsp_specificity" ADD FOREIGN KEY ("lspci_id") REFERENCES "lsp_compound_dictionary" ("lspci_id");
+ALTER TABLE "lsp_selectivity" ADD FOREIGN KEY ("lspci_id") REFERENCES "lsp_compound_dictionary" ("lspci_id");
 
-ALTER TABLE "lsp_specificity" ADD FOREIGN KEY ("gene_id") REFERENCES "lsp_target_dictionary" ("gene_id");
+ALTER TABLE "lsp_selectivity" ADD FOREIGN KEY ("gene_id") REFERENCES "lsp_target_dictionary" ("gene_id");
 
 ALTER TABLE "lsp_one_dose_scans" ADD FOREIGN KEY ("lspci_id") REFERENCES "lsp_compound_dictionary" ("lspci_id");
 
@@ -345,7 +359,7 @@ ALTER TABLE "lsp_one_dose_scan_agg" ADD FOREIGN KEY ("lspci_id") REFERENCES "lsp
 
 ALTER TABLE "lsp_one_dose_scan_agg" ADD FOREIGN KEY ("gene_id") REFERENCES "lsp_target_dictionary" ("gene_id");
 
-ALTER TABLE "lsp_one_dose_scan_agg" ADD FOREIGN KEY ("one_dose_scan_id") REFERENCES "lsp_one_dose_scans" ("one_dose_scan_id");
+ALTER TABLE "lsp_one_dose_scan_agg" ADD FOREIGN KEY ("one_dose_scan_agg_id") REFERENCES "lsp_one_dose_scans" ("one_dose_scan_agg_id");
 
 ALTER TABLE "lsp_clinical_info" ADD FOREIGN KEY ("lspci_id") REFERENCES "lsp_compound_dictionary" ("lspci_id");
 
@@ -364,6 +378,8 @@ CREATE INDEX ON "lsp_compound_dictionary" ("chembl_id");
 CREATE INDEX ON "lsp_compound_dictionary" ("emolecules_id");
 
 CREATE INDEX ON "lsp_compound_dictionary" ("commercially_available");
+
+CREATE INDEX ON "lsp_structures" ("lspci_id");
 
 CREATE INDEX ON "lsp_compound_names" ("lspci_id");
 
@@ -415,8 +431,6 @@ CREATE INDEX ON "lsp_phenotypic_agg" ("assay_id");
 
 CREATE INDEX ON "lsp_phenotypic_agg" ("lspci_id", "assay_id");
 
-CREATE INDEX ON "lsp_phenotypic_agg" ("tas_id");
-
 CREATE INDEX ON "lsp_tas" ("lspci_id");
 
 CREATE INDEX ON "lsp_tas" ("gene_id");
@@ -425,9 +439,9 @@ CREATE INDEX ON "lsp_tas" ("lspci_id", "gene_id");
 
 CREATE INDEX ON "lsp_tas" ("tas");
 
-CREATE INDEX ON "tas_references" ("tas_id");
+CREATE INDEX ON "lsp_tas_references" ("tas_id");
 
-CREATE INDEX ON "tas_references" ("reference_id");
+CREATE INDEX ON "lsp_tas_references" ("reference_id");
 
 CREATE INDEX ON "lsp_manual_curation" ("lspci_id");
 
@@ -437,11 +451,11 @@ CREATE INDEX ON "lsp_manual_curation" ("lspci_id", "gene_id");
 
 CREATE INDEX ON "lsp_manual_curation" ("tas_id");
 
-CREATE INDEX ON "lsp_specificity" ("lspci_id");
+CREATE INDEX ON "lsp_selectivity" ("lspci_id");
 
-CREATE INDEX ON "lsp_specificity" ("gene_id");
+CREATE INDEX ON "lsp_selectivity" ("gene_id");
 
-CREATE INDEX ON "lsp_specificity" ("lspci_id", "gene_id");
+CREATE INDEX ON "lsp_selectivity" ("lspci_id", "gene_id");
 
 CREATE INDEX ON "lsp_one_dose_scans" ("lspci_id");
 
@@ -457,7 +471,7 @@ CREATE INDEX ON "lsp_one_dose_scan_agg" ("gene_id");
 
 CREATE INDEX ON "lsp_one_dose_scan_agg" ("lspci_id", "gene_id");
 
-CREATE INDEX ON "lsp_one_dose_scan_agg" ("one_dose_scan_id");
+CREATE INDEX ON "lsp_one_dose_scan_agg" ("one_dose_scan_agg_id");
 
 CREATE INDEX ON "lsp_clinical_info" ("lspci_id");
 
@@ -491,6 +505,16 @@ COMMENT ON COLUMN "lsp_compound_dictionary"."commercially_available" IS 'Indicat
 
 COMMENT ON COLUMN "lsp_compound_dictionary"."highest_approval" IS 'Approval and clinical trial status of the compound.';
 
+COMMENT ON TABLE "lsp_structures" IS 'Additional secondary InChIs for compounds.';
+
+COMMENT ON COLUMN "lsp_structures"."lspci_id" IS 'Foreign key for compound ID';
+
+COMMENT ON COLUMN "lsp_structures"."source" IS 'Source for the compound name';
+
+COMMENT ON COLUMN "lsp_structures"."rank" IS 'Rank of InCHI according to source reliability and annotation quality';
+
+COMMENT ON COLUMN "lsp_structures"."inchi" IS 'InChI chemical indentifier for the compound, standardized     using https://github.com/chembl/ChEMBL_Structure_Pipeline';
+
 COMMENT ON TABLE "lsp_compound_names" IS 'Table of all annotated names for compounds. The sources     for compound names generally distinguish between primary and     alternative (secondary) names.';
 
 COMMENT ON COLUMN "lsp_compound_names"."lspci_id" IS 'Foreign key for compound ID';
@@ -515,7 +539,7 @@ COMMENT ON COLUMN "lsp_target_dictionary"."gene_id" IS 'Entrez gene ID';
 
 COMMENT ON COLUMN "lsp_target_dictionary"."symbol" IS 'Entrez gene symbol';
 
-COMMENT ON COLUMN "lsp_target_dictionary"."description" IS 'Description of gene function';
+COMMENT ON COLUMN "lsp_target_dictionary"."pref_name" IS 'Gene name';
 
 COMMENT ON COLUMN "lsp_target_dictionary"."tax_id" IS 'Entrez taxonomy ID';
 
@@ -524,8 +548,6 @@ COMMENT ON COLUMN "lsp_target_dictionary"."organism" IS 'Organism for which gene
 COMMENT ON TABLE "lsp_target_mapping" IS 'Mapping between the original ChEMBL target IDs,     their corresponding UniProt IDs and Entrez gene IDs.     A single UniProt or ChEMBL ID can refer to protein complexes,     therefore multiple gene IDs often map to the same UniProt or     ChEMBL ID.';
 
 COMMENT ON COLUMN "lsp_target_mapping"."gene_id" IS 'Foreign key to lsp_target_dictionary table. Entrez gene ID';
-
-COMMENT ON COLUMN "lsp_target_mapping"."pref_name" IS 'Target name. Contains information about possible mutations etc.';
 
 COMMENT ON COLUMN "lsp_target_mapping"."chembl_id" IS 'ChEMBL target ID';
 
@@ -553,6 +575,10 @@ COMMENT ON COLUMN "lsp_biochem"."lspci_id" IS 'Foreign key for compound ID';
 
 COMMENT ON COLUMN "lsp_biochem"."gene_id" IS 'Foreign key for gene ID';
 
+COMMENT ON COLUMN "lsp_biochem"."symbol" IS 'Gene symbol';
+
+COMMENT ON COLUMN "lsp_biochem"."source" IS 'Source for the measurement';
+
 COMMENT ON COLUMN "lsp_biochem"."description_assay" IS 'Description of the assay that the measurement is derived from';
 
 COMMENT ON COLUMN "lsp_biochem"."value" IS 'Measurement value';
@@ -574,6 +600,8 @@ COMMENT ON COLUMN "lsp_biochem_agg"."biochem_agg_id" IS 'All measurements with t
 COMMENT ON COLUMN "lsp_biochem_agg"."lspci_id" IS 'Foreign key for compound ID';
 
 COMMENT ON COLUMN "lsp_biochem_agg"."gene_id" IS 'Foreign key for gene ID';
+
+COMMENT ON COLUMN "lsp_biochem_agg"."symbol" IS 'Gene symbol';
 
 COMMENT ON COLUMN "lsp_biochem_agg"."value" IS 'Aggregated measurement value';
 
@@ -613,11 +641,7 @@ COMMENT ON COLUMN "lsp_phenotypic_agg"."assay_id" IS 'Unique ID of the assays in
 
 COMMENT ON COLUMN "lsp_phenotypic_agg"."value" IS 'Aggregated measurement value';
 
-COMMENT ON COLUMN "lsp_phenotypic_agg"."value_type" IS 'The type of measurement performed.';
-
 COMMENT ON COLUMN "lsp_phenotypic_agg"."value_unit" IS 'The unit of the measurement.';
-
-COMMENT ON COLUMN "lsp_phenotypic_agg"."tas_id" IS 'Foreign key to lsp_tas table. Indicates that this value was used to calculate the referenced TAS.';
 
 COMMENT ON TABLE "lsp_tas" IS 'Table of Target Affinity Spectrum (TAS) values for the affinity between     compound and target. TAS enables aggregation of affinity measurements from     heterogeneous sources and assays into a single value. See     10.1016/j.chembiol.2019.02.018 for details.';
 
@@ -627,15 +651,17 @@ COMMENT ON COLUMN "lsp_tas"."lspci_id" IS 'Foreign key for compound ID';
 
 COMMENT ON COLUMN "lsp_tas"."gene_id" IS 'Foreign key for gene ID';
 
+COMMENT ON COLUMN "lsp_tas"."symbol" IS 'Gene symbol';
+
 COMMENT ON COLUMN "lsp_tas"."tas" IS 'Target Affinity Spectrum (TAS). A number between 1 and 10 for the affinity between compound and target. 1 being most strongly binding.';
 
 COMMENT ON COLUMN "lsp_tas"."derived_from" IS 'Data type that the TAS value was derived from.';
 
-COMMENT ON TABLE "tas_references" IS 'Table that makes it easier to link TAS values to the references that were used to compute the TAS values';
+COMMENT ON TABLE "lsp_tas_references" IS 'Table that makes it easier to link TAS values to the references that were used to compute the TAS values';
 
-COMMENT ON COLUMN "tas_references"."tas_id" IS 'Foreing key to lsp_tas table. References in this table were used to compute the linked TAS values.';
+COMMENT ON COLUMN "lsp_tas_references"."tas_id" IS 'Foreing key to lsp_tas table. References in this table were used to compute the linked TAS values.';
 
-COMMENT ON COLUMN "tas_references"."reference_id" IS 'Foreign key to lsp_references table. Points to all references associated with a given TAS value.';
+COMMENT ON COLUMN "lsp_tas_references"."reference_id" IS 'Foreign key to lsp_references table. Points to all references associated with a given TAS value.';
 
 COMMENT ON TABLE "lsp_manual_curation" IS 'Table of manual compund target binding assertions.';
 
@@ -647,23 +673,23 @@ COMMENT ON COLUMN "lsp_manual_curation"."reference_id" IS 'Foreing key to the ls
 
 COMMENT ON COLUMN "lsp_manual_curation"."tas_id" IS 'Foreign key to lsp_tas table. Indicates that this value was used to calculate the referenced TAS.';
 
-COMMENT ON TABLE "lsp_specificity" IS 'Table of specificity assertions of compounds to their targets. See     10.1016/j.chembiol.2019.02.018 for details.';
+COMMENT ON TABLE "lsp_selectivity" IS 'Table of selectivity assertions of compounds to their targets. See     10.1016/j.chembiol.2019.02.018 for details.';
 
-COMMENT ON COLUMN "lsp_specificity"."lspci_id" IS 'Foreign key for compound ID';
+COMMENT ON COLUMN "lsp_selectivity"."lspci_id" IS 'Foreign key for compound ID';
 
-COMMENT ON COLUMN "lsp_specificity"."gene_id" IS 'Foreign key for gene ID';
+COMMENT ON COLUMN "lsp_selectivity"."gene_id" IS 'Foreign key for gene ID';
 
-COMMENT ON COLUMN "lsp_specificity"."selectivity_class" IS 'Assertion for the selectivity of the compound to the given target.';
+COMMENT ON COLUMN "lsp_selectivity"."selectivity_class" IS 'Assertion for the selectivity of the compound to the given target.';
 
-COMMENT ON COLUMN "lsp_specificity"."ic50_difference" IS 'Difference between ontarget and offtarget IC50 Q1 measurements';
+COMMENT ON COLUMN "lsp_selectivity"."ic50_difference" IS 'Difference between ontarget and offtarget IC50 Q1 measurements';
 
-COMMENT ON COLUMN "lsp_specificity"."ontarget_ic50_q1" IS 'First quartile of ontarget IC50 measurements';
+COMMENT ON COLUMN "lsp_selectivity"."ontarget_ic50_q1" IS 'First quartile of ontarget IC50 measurements';
 
-COMMENT ON COLUMN "lsp_specificity"."offtarget_ic50_q1" IS 'First quartile of offtarget IC50 measurements';
+COMMENT ON COLUMN "lsp_selectivity"."offtarget_ic50_q1" IS 'First quartile of offtarget IC50 measurements';
 
-COMMENT ON COLUMN "lsp_specificity"."ontarget_n" IS 'Number of ontarget IC50 measurements';
+COMMENT ON COLUMN "lsp_selectivity"."ontarget_n" IS 'Number of ontarget IC50 measurements';
 
-COMMENT ON COLUMN "lsp_specificity"."offtarget_n" IS 'Number of offtarget IC50 measurements';
+COMMENT ON COLUMN "lsp_selectivity"."offtarget_n" IS 'Number of offtarget IC50 measurements';
 
 COMMENT ON TABLE "lsp_one_dose_scans" IS 'Table of single dose compound activity measurements as     opposed to full dose-response affinity measurements.';
 
@@ -673,17 +699,15 @@ COMMENT ON COLUMN "lsp_one_dose_scans"."lspci_id" IS 'Foreign key for compound I
 
 COMMENT ON COLUMN "lsp_one_dose_scans"."gene_id" IS 'Foreign key for gene ID';
 
-COMMENT ON COLUMN "lsp_one_dose_scans"."percent_control" IS 'Remaining activity of target at the given compound concentration.';
+COMMENT ON COLUMN "lsp_one_dose_scans"."symbol" IS 'Gene symbol';
 
-COMMENT ON COLUMN "lsp_one_dose_scans"."description" IS 'Description of target.';
+COMMENT ON COLUMN "lsp_one_dose_scans"."percent_control" IS 'Remaining activity of target at the given compound concentration.';
 
 COMMENT ON COLUMN "lsp_one_dose_scans"."concentration" IS 'Concentration of the compound in the assay.';
 
 COMMENT ON COLUMN "lsp_one_dose_scans"."reference_id" IS 'The reference for the measurement.';
 
-COMMENT ON COLUMN "lsp_one_dose_scans"."reference_type" IS 'The source of the measurement.';
-
-COMMENT ON COLUMN "lsp_one_dose_scans"."url" IS 'URL to access the reference.';
+COMMENT ON COLUMN "lsp_one_dose_scans"."one_dose_scan_agg_id" IS 'All measurements with this ID in lsp_one_dose_scan_agg were aggregated.';
 
 COMMENT ON TABLE "lsp_one_dose_scan_agg" IS 'Table of single dose compound activity measurements as     opposed to full dose-response affinity measurements.
 All available data for a single concentration and compound target pair were
@@ -693,11 +717,13 @@ COMMENT ON COLUMN "lsp_one_dose_scan_agg"."lspci_id" IS 'Foreign key for compoun
 
 COMMENT ON COLUMN "lsp_one_dose_scan_agg"."gene_id" IS 'Foreign key for gene ID';
 
+COMMENT ON COLUMN "lsp_one_dose_scan_agg"."symbol" IS 'Gene symbol';
+
 COMMENT ON COLUMN "lsp_one_dose_scan_agg"."percent_control" IS 'Aggregated remaining activity of target at the given compound concentration.';
 
 COMMENT ON COLUMN "lsp_one_dose_scan_agg"."concentration" IS 'Concentration of the compound in the assay.';
 
-COMMENT ON COLUMN "lsp_one_dose_scan_agg"."one_dose_scan_id" IS 'Foreign key to lsp_one_dose_scans table. All measurements with the same ID are aggregated.';
+COMMENT ON COLUMN "lsp_one_dose_scan_agg"."one_dose_scan_agg_id" IS 'Foreign key to lsp_one_dose_scans table. All measurements with the same ID are aggregated.';
 
 COMMENT ON TABLE "lsp_clinical_info" IS 'Table of the clinical approval status of compounds.     Sourced from ChEMBL';
 
@@ -707,11 +733,11 @@ COMMENT ON TABLE "lsp_commercial_availability" IS 'Table of the commercial avail
 
 COMMENT ON COLUMN "lsp_commercial_availability"."lspci_id" IS 'Foreign key for compound ID';
 
+COMMENT ON COLUMN "lsp_commercial_availability"."emolecules_id" IS 'ID of compound at eMolecules';
+
 COMMENT ON COLUMN "lsp_commercial_availability"."vendor" IS 'The name of the vendor';
 
 COMMENT ON COLUMN "lsp_commercial_availability"."catalog_number" IS 'Catalog number of the compound.';
-
-COMMENT ON COLUMN "lsp_commercial_availability"."name" IS 'Compound name from the vendor, if available.';
 
 COMMENT ON COLUMN "lsp_commercial_availability"."tier" IS 'Shipment timeframe.';
 

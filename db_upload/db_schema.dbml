@@ -42,6 +42,25 @@ Table lsp_compound_dictionary {
   }
 }
 
+Table lsp_structures {
+  lspci_id int [
+    ref: > lsp_compound_dictionary.lspci_id,
+    note:"Foreign key for compound ID"
+  ]
+  source compound_sources [note:"Source for the compound name"]
+  rank int [note:"Rank of InCHI according to source reliability and annotation quality"]
+  inchi varchar [
+    note:'''InChI chemical indentifier for the compound, standardized \
+    using https://github.com/chembl/ChEMBL_Structure_Pipeline'''
+  ]
+
+  Note: "Additional secondary InChIs for compounds."
+
+  Indexes {
+    lspci_id
+  }
+}
+
 Enum name_priorities {
   primary [note:"Name annotated as primary name at source"]
   secondary [note:"Name annotated as secondary name at source"]
@@ -51,6 +70,7 @@ Enum compound_sources {
   chembl [note:"Derived from ChEMBL annotation"]
   hmsl [note:"Derived from HMS LINCS annotation"]
   emolecules [note:"Derived from vendor annotation at eMolecules"]
+  old_sms [note:"Derived from an old version of the Small Molecules Suite. Might not be annotated anymore in ChEMBL"]
 }
 
 Table lsp_compound_names {
@@ -97,7 +117,7 @@ Table lsp_compound_mapping {
 Table lsp_target_dictionary {
   gene_id int [pk, note:"Entrez gene ID"]
   symbol varchar [note:"Entrez gene symbol"]
-  description varchar [note:"Description of gene function"]
+  pref_name varchar [note:"Gene name"]
   tax_id int [note:"Entrez taxonomy ID"]
   organism varchar [note:"Organism for which gene is annotated"]
 
@@ -129,9 +149,6 @@ Table lsp_target_mapping {
   gene_id int [
     ref: > lsp_target_dictionary.gene_id,
     note:"Foreign key to lsp_target_dictionary table. Entrez gene ID"
-  ]
-  pref_name varchar [
-    note:"Target name. Contains information about possible mutations etc."
   ]
   chembl_id varchar [note:"ChEMBL target ID"]
   uniprot_id varchar [note:"UniProt ID"]
@@ -204,6 +221,11 @@ Table lsp_references {
   }
 }
 
+Enum measurement_sources {
+  chembl
+  lsp
+}
+
 Table lsp_biochem {
   biochem_id int [pk, note:"Primary key"]
   biochem_agg_id int [
@@ -218,6 +240,8 @@ Table lsp_biochem {
     ref: > lsp_target_dictionary.gene_id,
     note:"Foreign key for gene ID"
   ]
+  symbol varchar [note:"Gene symbol"]
+  source compound_sources [note:"Source for the measurement"]
   description_assay varchar [note:"Description of the assay that the measurement is derived from"]
   value float [note:"Measurement value"]
   value_type biochem_value_types [note:"The type of measurement performed."]
@@ -256,6 +280,7 @@ Table lsp_biochem_agg {
     ref: > lsp_target_dictionary.gene_id,
     note:"Foreign key for gene ID"
   ]
+  symbol varchar [note:"Gene symbol"]
   value float [note:"Aggregated measurement value"]
   value_unit biochem_value_units [note:"The unit of the measurement."]
   tas_id int [
@@ -321,12 +346,7 @@ Table lsp_phenotypic_agg {
   ]
   assay_id int [note:"Unique ID of the assays in the database. Correspond to ChEMBL assay IDs."]
   value float [note:"Aggregated measurement value"]
-  value_type varchar [note:"The type of measurement performed."]
   value_unit biochem_value_units [note:"The unit of the measurement."]
-  tas_id int [
-    ref: > lsp_tas.tas_id,
-    note:"Foreign key to lsp_tas table. Indicates that this value was used to calculate the referenced TAS."
-  ]
 
   Note:'''
     Table of aggregated phenotypic assays performed on the compounds.
@@ -338,7 +358,6 @@ Table lsp_phenotypic_agg {
     lspci_id
     assay_id
     (lspci_id, assay_id)
-    tas_id
   }
 }
 
@@ -361,6 +380,7 @@ Table lsp_tas {
     ref: > lsp_target_dictionary.gene_id,
     note:"Foreign key for gene ID"
   ]
+  symbol varchar [note:"Gene symbol"]
   tas int [
     note:"Target Affinity Spectrum (TAS). A number between 1 and 10 for the affinity between compound and target. 1 being most strongly binding."
   ]
@@ -381,7 +401,7 @@ Table lsp_tas {
   }
 }
 
-Table tas_references {
+Table lsp_tas_references {
   tas_id int [
     ref: > lsp_tas.tas_id,
     note:"Foreing key to lsp_tas table. References in this table were used to compute the linked TAS values."
@@ -437,7 +457,7 @@ Enum selectivity_classes {
   unknown_selective
 }
 
-Table lsp_specificity {
+Table lsp_selectivity {
   lspci_id int [
     ref: > lsp_compound_dictionary.lspci_id,
     note:"Foreign key for compound ID"
@@ -461,7 +481,7 @@ Table lsp_specificity {
   offtarget_n int [note:"Number of offtarget IC50 measurements"]
 
   Note:'''
-    Table of specificity assertions of compounds to their targets. See \
+    Table of selectivity assertions of compounds to their targets. See \
     10.1016/j.chembiol.2019.02.018 for details.
   '''
 
@@ -485,12 +505,13 @@ Table lsp_one_dose_scans {
     ref: > lsp_target_dictionary.gene_id,
     note:"Foreign key for gene ID"
   ]
+  symbol varchar [note:"Gene symbol"]
   percent_control float [note:"Remaining activity of target at the given compound concentration."]
-  description varchar [note:"Description of target."]
   concentration float [note:"Concentration of the compound in the assay."]
   reference_id varchar [note:"The reference for the measurement."]
-  reference_type reference_types [note:"The source of the measurement."]
-  url varchar [note:"URL to access the reference."]
+  one_dose_scan_agg_id int [
+    note:"All measurements with this ID in lsp_one_dose_scan_agg were aggregated."
+  ]
 
   Note:'''
     Table of single dose compound activity measurements as \
@@ -514,10 +535,11 @@ Table lsp_one_dose_scan_agg {
     ref: > lsp_target_dictionary.gene_id,
     note:"Foreign key for gene ID"
   ]
+  symbol varchar [note:"Gene symbol"]
   percent_control float [note:"Aggregated remaining activity of target at the given compound concentration."]
   concentration float [note:"Concentration of the compound in the assay."]
-  one_dose_scan_id int [
-    ref: > lsp_one_dose_scans.one_dose_scan_id,
+  one_dose_scan_agg_id int [
+    ref: > lsp_one_dose_scans.one_dose_scan_agg_id,
     note:"Foreign key to lsp_one_dose_scans table. All measurements with the same ID are aggregated."
   ]
 
@@ -532,7 +554,7 @@ Table lsp_one_dose_scan_agg {
     lspci_id
     gene_id
     (lspci_id, gene_id)
-    one_dose_scan_id
+    one_dose_scan_agg_id
   }
 }
 
@@ -577,11 +599,10 @@ Table lsp_commercial_availability {
     ref: > lsp_compound_dictionary.lspci_id,
     note:"Foreign key for compound ID"
   ]
+  emolecules_id int [note:"ID of compound at eMolecules"]
   vendor varchar [note:"The name of the vendor"]
   catalog_number varchar [note:"Catalog number of the compound."]
-  name varchar [note:"Compound name from the vendor, if available."]
   tier commercial_tiers [note:"Shipment timeframe."]
-
 
   Note:'''
     Table of the commercial availability of compounds. \
@@ -647,3 +668,4 @@ Table lsp_compound_library {
     (lspci_id, gene_id)
   }
 }
+
