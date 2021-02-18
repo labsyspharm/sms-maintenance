@@ -147,6 +147,9 @@ gene_info <- vroom(
 gene_info_relevant <- gene_info %>%
   distinct(
     tax_id, entrez_gene_id, symbol, entrez_symbol, entrez_synonyms, entrez_type_of_gene, entrez_name
+  ) %>%
+  mutate(
+    across(where(is.character), ~if_else(.x == "-", NA_character_, .x))
   )
 
 # Using gene symbols now for inital mapping, recovering more than with entrez IDs directly
@@ -254,9 +257,45 @@ map_chemblID_geneID <- chembl_map_with_symbol %>%
       #   by = c("organism", "entrez_gene_id")
       # )
   ) %>%
-  distinct()
+  mutate(
+    symbol = if_else(
+      (symbol == "-" | is.na(symbol)) &
+        entrez_symbol != "-" &
+        !is.na(entrez_symbol),
+      entrez_symbol,
+      symbol
+    )
+  ) %>%
+  distinct() %>%
+  arrange(entrez_gene_id) %>%
+  filter(!(is.na(entrez_gene_id) & is.na(symbol)))
 
-fwrite(map_chemblID_geneID, file.path(dir_release, "target_dictionary_wide.csv.gz"))
+# Deduplicated list of targets
+map_chemblID_geneID_table <- map_chemblID_geneID %>%
+  setDT() %>% {
+    .[
+      ,
+      .(
+        lspci_target_id = .GRP,
+        pref_name = pref_name
+      ),
+      keyby = .(entrez_gene_id, symbol, tax_id, organism)
+    ][
+      order(entrez_gene_id, symbol)
+    ]
+  }
+
+# Mapping of all targets to deduplicated table
+map_chemblID_geneID_map <- map_chemblID_geneID %>%
+  inner_join(
+    map_chemblID_geneID_table %>%
+      select(lspci_target_id, entrez_gene_id, symbol),
+    by = c("entrez_gene_id", "symbol")
+  )
+
+fwrite(map_chemblID_geneID_table, file.path(dir_release, "target_dictionary_wide.csv.gz"))
+
+fwrite(map_chemblID_geneID_map, file.path(dir_release, "target_mapping.csv.gz"))
 
 # map_chemblID_geneID <- syn("syn20693721") %>% read_csv()
 
@@ -273,7 +312,8 @@ target_wrangling_activity <- Activity(
 syn_id_mapping <- synExtra::synPluck(syn_release, "id_mapping")
 
 list(
-  file.path(dir_release, "target_dictionary_wide.csv.gz")
+  file.path(dir_release, "target_dictionary_wide.csv.gz"),
+  file.path(dir_release, "target_mapping.csv.gz")
 ) %>%
   map(
     . %>%
