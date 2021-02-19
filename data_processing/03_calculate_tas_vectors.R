@@ -38,7 +38,8 @@ inputs <- c(
   map(~c("aggregate_data", .x)) %>%
   c(
     list(
-      literature_annotations = c("raw_data", "literature_annotations", "literature_annotations.csv.gz")
+      literature_annotations = c("raw_data", "literature_annotations", "literature_annotations.csv.gz"),
+      target_dictionary = c("id_mapping", "target_dictionary_wide.csv.gz")
     )
   ) %>%
     pluck_inputs(syn_parent = syn_release)
@@ -87,7 +88,7 @@ single_dose_tas <- input_data[["single_dose_q1"]] %>%
 single_dose_tas[
     ,
     .(n = length(unique(na.omit(tas)))),
-    by = .(lspci_id, entrez_gene_id)
+    by = .(lspci_id, lspci_target_id)
   ][n > 1]
 
 # 43 cases
@@ -106,11 +107,11 @@ single_dose_tas_agg <- single_dose_tas[
       cmpd_conc_nM
     )
   ],
-  by = .(lspci_id, entrez_gene_id, symbol)
+  by = .(lspci_id, lspci_target_id)
 ][
   ,
   temp_tas_id := .GRP,
-  by = .(lspci_id, entrez_gene_id, symbol)
+  by = .(lspci_id, lspci_target_id)
 ]
 
 combined_tas <- rbindlist(
@@ -127,7 +128,7 @@ combined_tas <- rbindlist(
   fill = TRUE
 )[
   ,
-  .(lspci_id, entrez_gene_id, symbol, tas, unit, measurement, n_measurement, source, temp_tas_id)
+  .(lspci_id, lspci_target_id, tas, unit, measurement, n_measurement, source, temp_tas_id)
 ] %>%
   unique()
 
@@ -153,22 +154,29 @@ combined_tas_agg <- copy(combined_tas)[
 ][
   order(source_collapsed, tas),
   .SD[1],
-  keyby = .(lspci_id, entrez_gene_id, symbol)
+  keyby = .(lspci_id, lspci_target_id)
 ][
   ,
   `:=`(
     source_collapsed = NULL,
     tas_id = seq_len(.N)
   )
-]
+][
+  ,
+  .(
+    temp_tas_id, tas_id, lspci_id, lspci_target_id, tas, unit, measurement, n_measurement, source
+  )
+] %>%
+  left_join(
+    input_data[["target_dictionary"]][
+      , .(lspci_target_id, entrez_gene_id, symbol)
+    ],
+    by = "lspci_target_id"
+  )
 
 fwrite(
-  combined_tas_agg[
-    ,
-    .(
-      tas_id, lspci_id, entrez_gene_id, symbol, tas, unit, measurement, n_measurement, source
-    )
-  ],
+  combined_tas_agg %>%
+    select(-temp_tas_id),
   file.path(dir_release, "tas_vector.csv.gz")
 )
 
@@ -199,9 +207,9 @@ tas_measurement_map <- merge(
   merge(
     all_q1_measurements[
       ,
-      .(measurement_id, cmpd_conc_nM, source, lspci_id, entrez_gene_id)
+      .(measurement_id, cmpd_conc_nM, source, lspci_id, lspci_target_id)
     ],
-    by = c("lspci_id", "entrez_gene_id", "cmpd_conc_nM", "source"),
+    by = c("lspci_id", "lspci_target_id", "cmpd_conc_nM", "source"),
     all.x = TRUE
   ) %>% {
     .[

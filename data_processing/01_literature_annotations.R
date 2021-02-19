@@ -16,7 +16,8 @@ source(here("utils", "load_save.R"))
 ###############################################################################T
 
 inputs <- list(
-  lspci_id_vendor_id_map = c("compounds_processed", "lspci_id_vendor_id_map.csv.gz")
+  lspci_id_vendor_id_map = c("compounds_processed", "lspci_id_vendor_id_map.csv.gz"),
+  target_map = c("id_mapping", "target_mapping.csv.gz")
 ) %>%
   pluck_inputs(syn_parent = syn_release) %>%
   c(
@@ -41,6 +42,11 @@ literature_annotations <- input_data[["literature_annotations_raw"]] %>%
     by = c("hmsl_id")
   ) %>%
   select(lspci_id, entrez_gene_id = gene_id, symbol = gene_symbol) %>%
+  left_join(
+    input_data[["target_map"]] %>%
+      distinct(lspci_target_id, entrez_gene_id),
+    by = "entrez_gene_id"
+  ) %>%
   mutate(
     tas = 2L,
     evidence = "literature_annotation",

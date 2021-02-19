@@ -277,7 +277,7 @@ map_chemblID_geneID_table <- map_chemblID_geneID %>%
       ,
       .(
         lspci_target_id = .GRP,
-        pref_name = pref_name
+        pref_name = pref_name[1]
       ),
       keyby = .(entrez_gene_id, symbol, tax_id, organism)
     ][

@@ -21,7 +21,7 @@ syn_release <- synFindEntityId(release, "syn18457321")
 ###############################################################################T
 
 inputs <- list(
-  target_dictionary = synPluck(syn_release, "id_mapping", "target_dictionary_wide.csv.gz")
+  target_map = synPluck(syn_release, "id_mapping", "target_mapping.csv.gz")
 )
 
 input_data <- inputs %>%
@@ -148,17 +148,9 @@ activities_biochem <- data.table::rbindlist(
   )
 )
 
-target_dict_relevant <- input_data[["target_dictionary"]] %>%
-  mutate(
-    symbol = if_else(
-      (symbol == "-" | is.na(symbol)) &
-        entrez_symbol != "-" &
-        !is.na(entrez_symbol),
-      entrez_symbol,
-      symbol
-    )
-  ) %>%
+target_dict_relevant <- input_data[["target_map"]] %>%
   distinct(
+    lspci_target_id,
     tid,
     chembl_id_target = chembl_id,
     target_type,
@@ -173,8 +165,7 @@ target_dict_relevant <- input_data[["target_dictionary"]] %>%
 activities_biochem_geneid <- activities_biochem %>%
   # Only two targets are not present in dictionary, both are DNA. Not relevant
   inner_join(
-    target_dict_relevant %>%
-      mutate_at(vars(tid), as.integer64),
+    target_dict_relevant,
     by = c("organism", "tid")
   )
 

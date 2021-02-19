@@ -22,10 +22,10 @@ inputs <- list(
   chembl_biochemical = c("raw_data", "chembl", "chembl_biochemical_raw.csv.gz"),
   chembl_phenotypic = c("raw_data", "chembl", "chembl_phenotypic_raw.csv.gz"),
   chembl_biochemical = c("raw_data", "chembl", "chembl_biochemical_raw.csv.gz"),
-  target_dictionary = c("id_mapping", "target_dictionary_wide.csv.gz"),
   inhouse_dose_response = c("raw_data", "hmsl", "hmsl_doseresponse.csv.gz"),
   inhouse_single_dose = c("raw_data", "hmsl", "hmsl_singledose.csv.gz"),
-  chembl_references_best = c("raw_data", "chembl", "chembl_ref_info_best_source.csv.gz")
+  chembl_references_best = c("raw_data", "chembl", "chembl_ref_info_best_source.csv.gz"),
+  references = c("references", "references.csv.gz")
 ) %>%
   pluck_inputs(syn_parent = syn_release)
 
@@ -38,7 +38,6 @@ input_data <- inputs %>%
 biochem_neat <- copy(input_data[["chembl_biochemical"]]) %>%
   mutate(standard_value = as.numeric(standard_value)) %>%
   rename(pref_name_target = pref_name) %>%
-  filter(!is.na(entrez_gene_id) | !is.na(symbol)) %>%
   inner_join(
    copy(input_data[["lspci_id_vendor_id_map"]])[
      source == "chembl"
@@ -48,7 +47,7 @@ biochem_neat <- copy(input_data[["chembl_biochemical"]]) %>%
    ],
    by = c("chembl_id_compound" = "vendor_id")
   ) %>%
-  drop_na(lspci_id, entrez_gene_id)
+  drop_na(lspci_id, lspci_target_id)
 
 dose_response_inhouse_neat <- copy(input_data[["inhouse_dose_response"]]) %>%
   inner_join(
@@ -60,7 +59,7 @@ dose_response_inhouse_neat <- copy(input_data[["inhouse_dose_response"]]) %>%
     ],
     by = c("hmsl_id" = "vendor_id")
   ) %>%
-  drop_na(lspci_id, entrez_gene_id)
+  drop_na(lspci_id, lspci_target_id)
 
 # Aggregate dose-response data -------------------------------------------------
 ###############################################################################T
@@ -71,7 +70,7 @@ biochem_rowbind <- biochem_neat %>%
     by = "chembl_id_doc"
   ) %>%
   transmute(
-    lspci_id,
+    lspci_id, lspci_target_id,
     entrez_gene_id, symbol,
     value = standard_value,
     value_unit = standard_units,
@@ -85,7 +84,7 @@ biochem_rowbind <- biochem_neat %>%
 
 doseresponse_inhouse_rowbind <- dose_response_inhouse_neat %>%
   transmute(
-    lspci_id,
+    lspci_id, lspci_target_id,
     entrez_gene_id, symbol,
     value, value_unit, value_type,
     value_relation, description_assay = description,
@@ -98,14 +97,6 @@ biochem_complete <- bind_rows(
   biochem_rowbind,
   doseresponse_inhouse_rowbind
 ) %>%
-  # Remap obsolete entrez_ids
-  # 645840 -> 114112
-  # 348738 -> 6241
-  mutate(
-    entrez_gene_id = recode(
-      entrez_gene_id, `645840` = 114112L, `348738` = 6241L
-    )
-  ) %>%
   # Call to distinct important, since some assays can be recorded multiple times
   # for the same eq_class now, when multiple forms of the same drug where mapped
   # to the same eq_class and an assay was stored in the db for all forms
@@ -130,28 +121,32 @@ biochem_complete_q1 <- biochem_complete[
     Q1 = round(quantile(value, 0.25, names = FALSE), 2),
     n_measurement = .N
   ),
-  by = .(lspci_id, entrez_gene_id, symbol)
+  by = .(lspci_id, lspci_target_id)
 ]
 
 biochem_complete_q1_refs <- biochem_complete[
   ,
   .(
     lspci_id,
-    entrez_gene_id,
-    symbol,
+    lspci_target_id,
     reference_type,
-    reference_id
+    reference_value = reference_id
   )
 ] %>%
-  setkey() %>%
+  left_join(
+    input_data[["references"]][
+      , .(reference_id, reference_type, reference_value)
+    ],
+    by = c("reference_type", "reference_value")
+  ) %>%
+  setkey(lspci_id, lspci_target_id) %>%
   unique()
 
 biochem_complete_q1_measurements <- biochem_complete[
   ,
   .(
     lspci_id,
-    entrez_gene_id,
-    symbol,
+    lspci_target_id,
     measurement_source,
     external_measurement_id,
     measurement_id
@@ -180,7 +175,7 @@ fwrite(
 
 single_dose_data <- input_data[["inhouse_single_dose"]] %>%
   distinct(
-    lspci_id, entrez_gene_id, symbol, cmpd_conc_nM,
+    lspci_id, lspci_target_id, entrez_gene_id, symbol, cmpd_conc_nM,
     percent_control, reference_type, reference_id = reference_value,
   ) %>%
   mutate(
@@ -201,7 +196,7 @@ hmsl_kinomescan_q1 <- single_dose_data[
     percent_control_Q1 = round(quantile(percent_control, 0.25, names = FALSE), 2),
     n_measurement = .N
   ),
-  by = .(lspci_id, entrez_gene_id, symbol, cmpd_conc_nM)
+  by = .(lspci_id, lspci_target_id, cmpd_conc_nM)
 ]
 
 hmsl_kinomescan_q1_refs <- single_dose_data[
@@ -212,9 +207,15 @@ hmsl_kinomescan_q1_refs <- single_dose_data[
     symbol,
     cmpd_conc_nM,
     reference_type,
-    reference_id
+    reference_value = reference_id
   )
 ] %>%
+  left_join(
+    input_data[["references"]][
+      , .(reference_id, reference_type, reference_value)
+    ],
+    by = c("reference_type", "reference_value")
+  ) %>%
   setkey() %>%
   unique()
 
@@ -222,8 +223,7 @@ hmsl_kinomescan_q1_measurements <- single_dose_data[
   ,
   .(
     lspci_id,
-    entrez_gene_id,
-    symbol,
+    lspci_target_id,
     cmpd_conc_nM,
     measurement_source,
     measurement_id
@@ -310,9 +310,15 @@ pheno_data_q1_refs <- pheno_data_neat[
     lspci_id,
     assay_id,
     reference_type,
-    reference_id
+    reference_value = reference_id
   )
 ] %>%
+  left_join(
+    input_data[["references"]][
+      , .(reference_id, reference_type, reference_value)
+    ],
+    by = c("reference_type", "reference_value")
+  ) %>%
   setkey() %>%
   unique()
 

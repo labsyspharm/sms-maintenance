@@ -21,7 +21,8 @@ inputs <- list(
   selectivity = c("selectivity", "selectivity.csv.gz"),
   affinity_q1 = c("aggregate_data", "dose_response_q1.csv.gz"),
   approval = c("clinical_info", "lspci_id_approval.csv.gz"),
-  kinases = c("raw_data", "kinome", "kinase_data.csv")
+  kinases = c("raw_data", "kinome", "kinase_data.csv"),
+  target_dictionary = c("id_mapping", "target_dictionary_wide.csv.gz")
 ) %>%
   pluck_inputs(syn_parent = syn_release)
 
@@ -129,15 +130,15 @@ find_optimal_compounds_all_targets <- function(
       selectivity_class = factor(selectivity_class, levels = selectivity_classes),
       commercially_available = lspci_id %in% commercial_info$lspci_id
     ) %>%
-    select(entrez_gene_id, lspci_id, tool_score, selectivity_class, ontarget_IC50_Q1, commercially_available) %>%
-    group_nest(entrez_gene_id)
+    select(lspci_target_id, lspci_id, tool_score, selectivity_class, ontarget_IC50_Q1, commercially_available) %>%
+    group_nest(lspci_target_id)
   chemical_sim_filtered <- chemical_sim %>%
     filter(tanimoto_similarity >= maximum_tanimoto_similarity)
   cmpds <- sel_by_gene %>%
     # Only keep targets with at least 2 compounds
     # filter(map_lgl(data, ~nrow(.x) >= 2)) %>%
     transmute(
-      entrez_gene_id,
+      lspci_target_id,
       best_pair = map(
         data,
         find_optimal_compounds, chemical_sim_filtered
@@ -201,7 +202,7 @@ clinical_compounds <- input_data[["approval"]][
         ) %>%
         anti_join(
           input_data[["selectivity"]],
-          by = c("lspci_id", "entrez_gene_id")
+          by = c("lspci_id", "lspci_target_id")
         )
     ),
     by = "lspci_id"
@@ -324,10 +325,10 @@ fwrite(
 
 optimal_libraries_combined <- bind_rows(
     optimal_libraries %>%
-      select(entrez_gene_id, reason_included, ends_with("_1")) %>%
+      select(lspci_target_id, reason_included, ends_with("_1")) %>%
       rename_all(str_replace, fixed("_1"), ""),
     optimal_libraries %>%
-      select(entrez_gene_id, reason_included, ends_with("_2")) %>%
+      select(lspci_target_id, reason_included, ends_with("_2")) %>%
       rename_all(str_replace, fixed("_2"), "") %>%
       drop_na(lspci_id)
   ) %>%
@@ -335,23 +336,29 @@ optimal_libraries_combined <- bind_rows(
     anti_join(
       clinical_compounds,
       .,
-      by = c("lspci_id", "entrez_gene_id")
+      by = c("lspci_id", "lspci_target_id")
     ) %>%
-      select(entrez_gene_id, lspci_id, reason_included, selectivity_class, tool_score, ontarget_IC50_Q1, commercially_available)
+      select(lspci_target_id, lspci_id, reason_included, selectivity_class, tool_score, ontarget_IC50_Q1, commercially_available)
   ) %>%
   mutate(
     selectivity_class = factor(selectivity_class, levels = SELECTIVITY_CLASSES)
   ) %>%
   arrange(
-    entrez_gene_id,
+    lspci_target_id,
     desc(as.integer(commercially_available)),
     as.integer(selectivity_class),
     desc(tool_score),
     ontarget_IC50_Q1
   ) %>%
-  group_by(entrez_gene_id) %>%
+  group_by(lspci_target_id) %>%
   mutate(rank = 1:n()) %>%
-  ungroup()
+  ungroup() %>%
+  left_join(
+    input_data[["target_dictionary"]][
+      , .(lspci_target_id, entrez_gene_id, symbol)
+    ],
+    by = "lspci_target_id"
+  )
 
 fwrite(
   optimal_libraries_combined,
@@ -364,8 +371,14 @@ fwrite(
 # Liganded genome genes with at least 3 cmpds < 10 uM
 liganded_genome <- input_data[["affinity_q1"]] %>%
   filter(Q1 < 10000) %>%
-  group_by(entrez_gene_id) %>%
-  summarize(Q1 = min(Q1), .groups = "drop")
+  group_by(lspci_target_id) %>%
+  summarize(Q1 = min(Q1), .groups = "drop") %>%
+  left_join(
+    input_data[["target_dictionary"]][
+      , .(lspci_target_id, entrez_gene_id, symbol)
+    ],
+    by = "lspci_target_id"
+  )
 
 fwrite(
   liganded_genome,

@@ -22,7 +22,8 @@ dir_release <- here(release)
 syn_release <- synFindEntityId(release, "syn18457321")
 
 inputs <- list(
-  dose_response_measurements = c("aggregate_data", "dose_response_measurements.csv.gz")
+  dose_response_measurements = c("aggregate_data", "dose_response_measurements.csv.gz"),
+  target_dictionary = c("id_mapping", "target_dictionary_wide.csv.gz")
 ) %>%
   pluck_inputs(syn_parent = syn_release)
 
@@ -32,12 +33,12 @@ input_data <- inputs %>%
 # set toolscore function -------------------------------------------------------
 ###############################################################################T
 
-calc_toolscore<-function(data, target_entrez_gene_id)
+calc_toolscore<-function(data, target_lspci_target_id)
 {
   example_subset<-data
 
-  ontarget<-example_subset[entrez_gene_id == target_entrez_gene_id]
-  offtarget<-example_subset[entrez_gene_id !=  target_entrez_gene_id]
+  ontarget<-example_subset[lspci_target_id == target_lspci_target_id]
+  offtarget<-example_subset[lspci_target_id !=  target_lspci_target_id]
 
   chembl_active_data<-as.numeric(as.character(ontarget$value))
   chembl_active_low_nM<-chembl_active_data[chembl_active_data<=100]
@@ -85,16 +86,16 @@ iterate_targets <- function(c.data, ...) {
   toolscore_index<-0
   # c.data<-as.data.frame(lspci_id_list[[index_cmpd]])
   c.lspci_id<-unique(c.data$lspci_id)
-  c.targets<-unique(c.data$entrez_gene_id)
-  pb <- txtProgressBar(max = length(c.targets), style = 3)
-  on.exit(close(pb))
+  c.targets<-unique(c.data$lspci_target_id)
+  # pb <- txtProgressBar(max = length(c.targets), style = 3)
+  # on.exit(close(pb))
   for(index_target in 1:length(c.targets)){
-    setTxtProgressBar(pb, index_target)
+    # setTxtProgressBar(pb, index_target)
     c.df<-list()
-    c.entrez_gene_id<-c.targets[index_target]
+    c.lspci_target_id<-c.targets[index_target]
     c.df$lspci_id<-c.lspci_id
-    c.df$entrez_gene_id<-c.entrez_gene_id
-    c.return<-calc_toolscore(c.data, c.entrez_gene_id)
+    c.df$lspci_target_id<-c.lspci_target_id
+    c.return<-calc_toolscore(c.data, c.lspci_target_id)
     if(!is.na(c.return[[3]])){
       toolscore_index<-toolscore_index+1
       c.df$tool_score<-c.return[[1]]
@@ -214,6 +215,12 @@ selectivity_classes <- toolscore_all %>%
       calculate_selectivity_class(.),
       levels = selectivity_class_order
     )
+  ) %>%
+  left_join(
+    input_data[["target_dictionary"]][
+      , .(lspci_target_id, entrez_gene_id, symbol)
+    ],
+    by = "lspci_target_id"
   )
 
 fwrite(
@@ -233,6 +240,7 @@ selectivity_calc_activity <- Activity(
 syn_selectivity_folder <- synMkdir(syn_release, "selectivity")
 
 c(
+  file.path(dir_release, "toolscores.csv.gz"),
   file.path(dir_release, "selectivity.csv.gz")
 ) %>%
   synStoreMany(parentId = syn_selectivity_folder, activity = selectivity_calc_activity)

@@ -17,7 +17,7 @@ source(here("utils", "load_save.R"))
 ###############################################################################T
 
 inputs <- inputs <- list(
-  target_dictionary = synPluck(syn_release, "id_mapping", "target_dictionary_wide.csv.gz"),
+  target_map = synPluck(syn_release, "id_mapping", "target_mapping.csv.gz"),
   lspci_id_vendor_id_map = synPluck(syn_release, "compounds_processed", "lspci_id_vendor_id_map.csv.gz")
 ) %>%
   c(
@@ -43,6 +43,20 @@ doseresponse <- input_data[["hmsl_doseresponse_20"]] %>%
     )
   ) %>%
   rename(entrez_gene_id = gene_id) %>%
+  select(-uniprot_id, -symbol, -description) %>%
+  inner_join(
+    input_data[["target_map"]][
+      ,
+      .(
+        lspci_target_id,
+        symbol,
+        entrez_gene_id,
+        uniprot_id,
+        description = pref_name
+      )
+    ],
+    by = "entrez_gene_id"
+  ) %>%
   bind_rows(
     input_data[["hmsl_doseresponse_21"]] %>%
       # Remove compounds where no assay was available
@@ -64,9 +78,10 @@ doseresponse <- input_data[["hmsl_doseresponse_20"]] %>%
         file_url = "https://www.synapse.org/#!Synapse:syn24210560"
       ) %>%
       inner_join(
-        input_data[["target_dictionary"]][
+        input_data[["target_map"]][
           ,
           .(
+            lspci_target_id,
             symbol,
             entrez_gene_id,
             uniprot_id,
@@ -107,9 +122,10 @@ single_dose <- input_data[["inhouse_single_dose"]] %>%
   # Two cases where no symbol is give, skipping
   filter(symbol != "") %>%
   inner_join(
-    input_data[["target_dictionary"]][
+    input_data[["target_map"]][
       ,
       .(
+        lspci_target_id,
         symbol,
         entrez_gene_id,
         uniprot_id
@@ -183,7 +199,7 @@ hmsl_activity <- Activity(
 syn_id_mapping <- synMkdir(syn_release, "raw_data", "hmsl")
 
 c(
-  # here(release, "hmsl_doseresponse.csv.gz"),
+  here(release, "hmsl_doseresponse.csv.gz"),
   here(release, "hmsl_singledose.csv.gz")
 ) %>%
   synStoreMany(parent = syn_id_mapping, activity = hmsl_activity)
