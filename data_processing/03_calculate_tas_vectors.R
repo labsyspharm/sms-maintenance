@@ -21,8 +21,7 @@ source(here("utils", "load_save.R"))
 
 inputs <- c(
   "dose_response",
-  "single_dose",
-  "phenotypic"
+  "single_dose"
 ) %>%
   interaction(
     c(
@@ -239,4 +238,4 @@ c(
   file.path(dir_release, "tas_vector.csv.gz"),
   file.path(dir_release, "tas_measurement_map.csv.gz")
 ) %>%
-  synStoreMany(parentId = syn_tas_folder, activity = tas_activity)
+  synStoreMany(parentId = syn_tas_folder, activity = tas_activity, forceVersion = FALSE)

@@ -136,7 +136,7 @@ toolscore.b <- input_data[["dose_response_measurements"]][
     data,
     iterate_targets,
     .options = furrr_options(
-      scheduling = 1000L
+      scheduling = 10L
     )
   )
 ]

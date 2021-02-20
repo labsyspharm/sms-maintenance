@@ -65,7 +65,7 @@ fwrite(
   file.path(dir_release, "chemical_sim_selective.csv.gz")
 )
 
-# chemical_sim_selective <- read_rds(file.path(dir_release, "chemical_sim_selective.rds"))
+# chemical_sim <- fread(file.path(dir_release, "chemical_sim_selective.csv.gz"))
 
 # Construct optimal library ----------------------------------------------------
 ###############################################################################T
@@ -416,5 +416,5 @@ c(
   file.path(dir_release, "optimal_kinase_library.csv.gz"),
   file.path(dir_release, "liganded_genome.csv.gz")
 ) %>%
-  synStoreMany(parentId = syn_library_folder, activity = library_activity)
+  synStoreMany(parentId = syn_library_folder, activity = library_activity, forceVersion = FALSE)
 

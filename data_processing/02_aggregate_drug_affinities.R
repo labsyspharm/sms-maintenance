@@ -203,8 +203,7 @@ hmsl_kinomescan_q1_refs <- single_dose_data[
   ,
   .(
     lspci_id,
-    entrez_gene_id,
-    symbol,
+    lspci_target_id,
     cmpd_conc_nM,
     reference_type,
     reference_value = reference_id
@@ -378,4 +377,4 @@ c(
   ) %>%
   levels() %>%
   {file.path(dir_release, .)} %>%
-  synStoreMany(parent = syn_aggregate, activity = aggregation_activity)
+  synStoreMany(parent = syn_aggregate, activity = aggregation_activity, forceVersion = FALSE)

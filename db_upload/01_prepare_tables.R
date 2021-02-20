@@ -33,6 +33,8 @@ replace_empty_string_na <- function(df) {
 
 inputs <- list(
   target_dictionary = c("id_mapping", "target_dictionary_wide.csv.gz"),
+  target_map = c("id_mapping", "target_mapping.csv.gz"),
+  target_map = c("id_mapping", "target_mapping.csv.gz"),
   compound_dictionary = c("compounds_processed", "compound_dictionary.csv.gz"),
   fingerprints = c("compounds_processed", "lspci_id_fingerprints.csv.gz"),
   selectivity = c("selectivity", "selectivity.csv.gz"),
@@ -76,18 +78,6 @@ input_data <- inputs %>%
 # Make tables ------------------------------------------------------------------
 ###############################################################################T
 
-left_join_by_target_id <- function(x, y, by, check = "cbvmn") {
-  x %>%
-    mutate(jc = if_else(is.na(entrez_gene_id), symbol, as.character(entrez_gene_id))) %>%
-    safe_left_join(
-      y %>%
-        mutate(jc = if_else(is.na(entrez_gene_id), symbol, as.character(entrez_gene_id))) %>%
-        select(-symbol, -entrez_gene_id),
-      by = union(by, "jc"),
-      check = check
-    )
-}
-
 lsp_compound_dictionary <- input_data[["compound_dictionary"]] %>%
   select(
     lspci_id, hmsl_id, chembl_id, emolecules_id, pref_name,
@@ -118,24 +108,23 @@ lsp_compound_mapping <- input_data[["vendor_ids"]] %>%
 
 lsp_target_dictionary <- input_data[["target_dictionary"]] %>%
   select(
-    gene_id = entrez_gene_id, symbol, pref_name, tax_id, organism
+    lspci_target_id, gene_id = entrez_gene_id, symbol, pref_name, tax_id, organism
   ) %>%
   distinct() %>%
-  arrange(gene_id)
+  arrange(lspci_target_id)
 
-lsp_target_mapping <- input_data[["target_dictionary"]] %>%
+lsp_target_mapping <- input_data[["target_map"]] %>%
   select(
-    gene_id = entrez_gene_id, chembl_id, uniprot_id, target_type
+    lspci_target_id, gene_id = entrez_gene_id, entrez_synonyms, chembl_id, uniprot_id, target_type
   ) %>%
   distinct() %>%
-  arrange(gene_id) %>%
-  drop_na(gene_id)
+  arrange(lspci_target_id)
 
 lsp_references <- synPluck(syn_release, "reference_table") %>%
   {synTableQuery(sprintf("SELECT * FROM %s", .))} %>%
   as.data.frame() %>%
-  select(
-    reference_id = ROW_ID, reference_type, reference_value, url
+  transmute(
+    reference_id = as.integer(ROW_ID), reference_type, reference_value, url
   ) %>%
   distinct() %>%
   setDT()
@@ -143,14 +132,15 @@ lsp_references <- synPluck(syn_release, "reference_table") %>%
 dose_response_q1_measurements <- input_data[["dose_response_q1_measurements"]][
   ,
   .(biochem_agg_id = .GRP),
-  keyby = .(lspci_id, entrez_gene_id, symbol)
+  keyby = .(lspci_id, lspci_target_id)
 ] %>%
   unique()
 
 lsp_biochem <- input_data[["dose_response_measurements"]] %>%
-  left_join_by_target_id(
+  safe_left_join(
     dose_response_q1_measurements,
-    c("lspci_id")
+    by = c("lspci_id", "lspci_target_id"),
+    check = "bcvmn"
   ) %>%
   rename(reference_value = reference_id) %>%
   safe_left_join(
@@ -164,8 +154,7 @@ lsp_biochem <- input_data[["dose_response_measurements"]] %>%
     biochem_id = measurement_id,
     biochem_agg_id,
     lspci_id,
-    gene_id = entrez_gene_id,
-    symbol,
+    lspci_target_id,
     source = recode(measurement_source, chembl_activity = "chembl", inhouse_doseresponse = "lsp"),
     description_assay,
     value,
@@ -175,28 +164,31 @@ lsp_biochem <- input_data[["dose_response_measurements"]] %>%
     reference_id
   ) %>%
   distinct() %>%
-  arrange(lspci_id, gene_id, symbol)
+  arrange(lspci_id, lspci_target_id)
 
 lsp_biochem_agg <- input_data[["dose_response_q1"]] %>%
-  left_join_by_target_id(
+  safe_left_join(
     dose_response_q1_measurements,
-    by = c("lspci_id")
+    by = c("lspci_id", "lspci_target_id"),
+    check = "bcuvmn"
   ) %>%
-  left_join_by_target_id(
+  safe_left_join(
     input_data[["tas"]] %>%
       filter(source == "dose_response") %>%
-      distinct(tas_id, lspci_id, entrez_gene_id, symbol),
-    by = c("lspci_id")
+      distinct(tas_id, lspci_id, lspci_target_id),
+    by = c("lspci_id", "lspci_target_id"),
+    check = "bcvm"
   ) %>%
   transmute(
     biochem_agg_id,
-    lspci_id, gene_id = entrez_gene_id, symbol,
+    lspci_id,
+    lspci_target_id,
     value = Q1,
     value_unit = "nM",
     tas_id
   ) %>%
   distinct() %>%
-  arrange(lspci_id, gene_id, symbol)
+  arrange(lspci_id, lspci_target_id)
 
 phenotypic_q1_measurements <- input_data[["phenotypic_q1_measurements"]][
   ,
@@ -244,11 +236,12 @@ lsp_phenotypic_agg <- input_data[["phenotypic_q1"]] %>%
 lsp_manual_curation <- input_data[["manual_curation"]] %>%
   # Unmatched values OK because some manual curations were
   # superceded by actual measurements
-  left_join_by_target_id(
+  safe_left_join(
     input_data[["tas"]] %>%
       filter(source == "literature_annotation") %>%
-      distinct(tas_id, lspci_id, entrez_gene_id, symbol),
-    by = c("lspci_id")
+      distinct(tas_id, lspci_id, lspci_target_id),
+    by = c("lspci_id", "lspci_target_id"),
+    check = "bcuvm"
   ) %>%
   safe_left_join(
     lsp_references %>%
@@ -259,25 +252,25 @@ lsp_manual_curation <- input_data[["manual_curation"]] %>%
   ) %>%
   transmute(
     lspci_id,
-    gene_id = entrez_gene_id,
-    symbol,
+    lspci_target_id,
     reference_id,
     tas_id
   ) %>%
   distinct() %>%
-  arrange(lspci_id, gene_id, symbol)
+  arrange(lspci_id, lspci_target_id)
 
 single_dose_q1_measurements <- input_data[["single_dose_q1_measurements"]][
   ,
   .(one_dose_scan_agg_id = .GRP),
-  keyby = .(lspci_id, entrez_gene_id, symbol, cmpd_conc_nM)
+  keyby = .(lspci_id, lspci_target_id, cmpd_conc_nM)
 ] %>%
   unique()
 
 lsp_one_dose_scans <- input_data[["single_dose_measurements"]] %>%
-  left_join_by_target_id(
+  safe_left_join(
     single_dose_q1_measurements,
-    by = c("lspci_id", "cmpd_conc_nM")
+    by = c("lspci_id", "lspci_target_id", "cmpd_conc_nM"),
+    check = "bcvnm"
   ) %>%
   rename(reference_value = reference_id) %>%
   safe_left_join(
@@ -291,39 +284,40 @@ lsp_one_dose_scans <- input_data[["single_dose_measurements"]] %>%
     one_dose_scan_id = measurement_id,
     one_dose_scan_agg_id,
     lspci_id,
-    gene_id = entrez_gene_id,
-    symbol,
+    lspci_target_id,
     source = recode(measurement_source, chembl_activity = "chembl", inhouse_single_dose = "lsp"),
     percent_control,
     concentration = cmpd_conc_nM,
     reference_id
   ) %>%
   distinct() %>%
-  arrange(lspci_id, gene_id, symbol, concentration)
+  arrange(lspci_id, lspci_target_id, concentration)
 
 lsp_one_dose_scan_agg <- input_data[["single_dose_q1"]] %>%
-  left_join_by_target_id(
+  safe_left_join(
     single_dose_q1_measurements,
-    by = c("lspci_id", "cmpd_conc_nM")
+    by = c("lspci_id", "lspci_target_id", "cmpd_conc_nM"),
+    check = "bcuvmn"
   ) %>%
   # Unmatched values OK because some one-dose measurements
   # are superceded by full dose-response assays
-  left_join_by_target_id(
+  safe_left_join(
     input_data[["tas"]] %>%
       filter(source == "single_dose") %>%
-      distinct(tas_id, lspci_id, entrez_gene_id, symbol),
-    by = c("lspci_id")
+      distinct(tas_id, lspci_id, lspci_target_id),
+    by = c("lspci_id", "lspci_target_id"),
+    check = "bcv"
   ) %>%
   transmute(
     one_dose_scan_agg_id,
-    lspci_id, gene_id = entrez_gene_id, symbol,
+    lspci_id, lspci_target_id,
     percent_control = percent_control_Q1,
     concentration = cmpd_conc_nM,
     value_unit = "nM",
     tas_id
   ) %>%
   distinct() %>%
-  arrange(lspci_id, gene_id, symbol, concentration)
+  arrange(lspci_id, lspci_target_id, concentration)
 
 lsp_clinical_info <- input_data[["approval"]] %>%
   select(
@@ -368,48 +362,42 @@ lsp_fingerprints <- input_data[["fingerprints"]] %>%
 lsp_compound_library <- input_data[["optimal_library"]] %>%
   select(
     lspci_id,
-    gene_id = entrez_gene_id,
+    lspci_target_id,
     rank,
     reason_included
   ) %>%
   distinct() %>%
-  arrange(gene_id, rank)
+  arrange(lspci_target_id, rank)
 
 lsp_tas <- input_data[["tas"]] %>%
   select(
     tas_id,
     lspci_id,
-    gene_id = entrez_gene_id,
-    symbol,
+    lspci_target_id,
     tas,
     derived_from = source
   ) %>%
   distinct() %>%
-  arrange(lspci_id, gene_id, symbol)
+  arrange(lspci_id, lspci_target_id)
 
 lsp_tas_references <- input_data[["tas"]] %>%
-  select(tas_id, lspci_id, entrez_gene_id, symbol, source) %>%
-  left_join_by_target_id(
+  select(tas_id, lspci_id, lspci_target_id, source) %>%
+  safe_left_join(
     bind_rows(
       single_dose = input_data[["single_dose_q1_references"]],
       dose_response = input_data[["dose_response_q1_references"]],
-      literature_annotation = copy(input_data[["manual_curation"]])[
-        ,  `:=`(
-          reference_id = reference_value
-        )
-      ],
+      literature_annotation = input_data[["manual_curation"]] %>%
+        safe_left_join(
+          lsp_references %>%
+            distinct(reference_id, reference_type, reference_value),
+          by = c("reference_type", "reference_value"),
+          check = "bcm"
+        ),
       .id = "source"
     ) %>%
-      select(lspci_id, entrez_gene_id, symbol, source, reference_type, reference_id),
-    by = c("lspci_id", "source"),
+      select(lspci_id, lspci_target_id, source, reference_id),
+    by = c("lspci_id", "lspci_target_id", "source"),
     check = "bcum"
-  ) %>%
-  rename(reference_value = reference_id) %>%
-  safe_left_join(
-    lsp_references %>%
-      distinct(reference_id, reference_type, reference_value),
-    by = c("reference_type", "reference_value"),
-    check = "bcvm"
   ) %>%
   select(
     tas_id,
@@ -421,7 +409,7 @@ lsp_tas_references <- input_data[["tas"]] %>%
 lsp_selectivity <- input_data[["selectivity"]] %>%
   select(
     lspci_id,
-    gene_id = entrez_gene_id,
+    lspci_target_id,
     selectivity_class,
     investigation_bias,
     strength,
@@ -435,7 +423,7 @@ lsp_selectivity <- input_data[["selectivity"]] %>%
     offtarget_n = offtarget_IC50_N
   ) %>%
   distinct() %>%
-  arrange(lspci_id, gene_id)
+  arrange(lspci_id, lspci_target_id)
 
 # write csv files --------------------------------------------------------------
 ###############################################################################T
@@ -447,7 +435,7 @@ tables <- tribble(
   "lsp_compound_names", c("compound_names"),
   "lsp_compound_mapping", c("vendor_ids"),
   "lsp_target_dictionary", c("target_dictionary"),
-  "lsp_target_mapping", c("target_dictionary"),
+  "lsp_target_mapping", c("target_map"),
   "lsp_references", c("references"),
   "lsp_biochem", c("dose_response_measurements", "dose_response_q1_measurements", "references"),
   "lsp_biochem_agg", c("dose_response_q1", "dose_response_q1_measurements", "tas"),
@@ -472,7 +460,20 @@ tables <- tribble(
     table = map(
       name,
       get
-    ),
+    ) %>%
+      # Add symbol, gene_id for all tables with lspci_target_id
+      map(
+        ~if (!"lspci_target_id" %in% names(.x) || any(c("gene_id", "symbol") %in% names(.x)))
+          .x
+        else
+          safe_left_join(
+            .x,
+            lsp_target_dictionary %>%
+              select(lspci_target_id, gene_id, symbol),
+            by = c("lspci_target_id"),
+            check = "bcvm"
+          )
+      ),
     path = file.path(
       dir_release,
       paste0(name, ".csv.gz")
@@ -486,7 +487,7 @@ pwalk(
     fwrite(
       table,
       path,
-      na = "NULL"
+      na = "NA"
     )
   }
 )
@@ -519,32 +520,19 @@ pwalk(
   tables,
   function(name, table, path, ...) {
     # message("Uploading ", name)
-    paste0(
-      "gunzip -cd ", path, " | psql --command=\"COPY ", name, " (", paste("\"", colnames(table), "\"", sep = "", collapse = ", "), ")",
+    # paste0(
+    #   "gunzip -cd ", path, " | psql --command='COPY ", name, " (", paste("\"", colnames(table), "\"", sep = "", collapse = ", "), ")",
+    #   " FROM STDIN CSV HEADER NULL \"NULL\";' sms_27"
+    # ) %>%
+    #   message()
+    cmd <- paste0(
+      "gunzip -cd ", path, " | ~/software/postgresql/13.1/bin/psql --command=\"COPY ", name,
       " FROM STDIN CSV HEADER NULL 'NULL';\" sms_27"
-    ) %>%
-      message()
+    )
+    message(cmd)
+    write_lines(
+      cmd, here("import.sh"), append = TRUE
+    )
   }
 )
 
-# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_compound_dictionary.csv.gz | psql --command="COPY lsp_compound_dictionary ("lspci_id", "hmsl_id", "chembl_id", "emolecules_id", "pref_name", "inchi", "commercially_available", "highest_approval") FROM STDIN CSV HEADER NULL 'NULL';" sms_27
-# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_structures.csv.gz | psql --command="COPY lsp_structures ("lspci_id", "source", "rank", "inchi") FROM STDIN CSV HEADER NULL 'NULL';" sms_27
-# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_compound_names.csv.gz | psql --command="COPY lsp_compound_names ("lspci_id", "source", "priority", "name") FROM STDIN CSV HEADER NULL 'NULL';" sms_27
-# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_compound_mapping.csv.gz | psql --command="COPY lsp_compound_mapping ("lspci_id", "source", "external_id") FROM STDIN CSV HEADER NULL 'NULL';" sms_27
-# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_target_dictionary.csv.gz | psql --command="COPY lsp_target_dictionary ("gene_id", "symbol", "pref_name", "tax_id", "organism") FROM STDIN CSV HEADER NULL 'NULL';" sms_27
-# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_target_mapping.csv.gz | psql --command="COPY lsp_target_mapping ("gene_id", "chembl_id", "uniprot_id", "target_type") FROM STDIN CSV HEADER NULL 'NULL';" sms_27
-# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_references.csv.gz | psql --command="COPY lsp_references ("reference_id", "reference_type", "reference_value", "url") FROM STDIN CSV HEADER NULL 'NULL';" sms_27
-# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_biochem.csv.gz | psql --command="COPY lsp_biochem ("biochem_id", "biochem_agg_id", "lspci_id", "gene_id", "symbol", "source", "description_assay", "value", "value_type", "value_unit", "value_relation", "reference_id") FROM STDIN CSV HEADER NULL 'NULL';" sms_27
-# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_biochem_agg.csv.gz | psql --command="COPY lsp_biochem_agg ("biochem_agg_id", "lspci_id", "gene_id", "symbol", "value", "value_unit", "tas_id") FROM STDIN CSV HEADER NULL 'NULL';" sms_27
-# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_phenotypic.csv.gz | psql --command="COPY lsp_phenotypic ("phenotypic_id", "lspci_id", "assay_id", "value", "value_type", "value_unit", "description_assay", "reference_id", "phenotypic_agg_id") FROM STDIN CSV HEADER NULL 'NULL';" sms_27
-# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_phenotypic_agg.csv.gz | psql --command="COPY lsp_phenotypic_agg ("phenotypic_agg_id", "lspci_id", "assay_id", "value", "value_unit") FROM STDIN CSV HEADER NULL 'NULL';" sms_27
-# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_tas.csv.gz | psql --command="COPY lsp_tas ("tas_id", "lspci_id", "gene_id", "symbol", "tas", "derived_from") FROM STDIN CSV HEADER NULL 'NULL';" sms_27
-# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_tas_references.csv.gz | psql --command="COPY lsp_tas_references ("tas_id", "reference_id") FROM STDIN CSV HEADER NULL 'NULL';" sms_27
-# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_manual_curation.csv.gz | psql --command="COPY lsp_manual_curation ("lspci_id", "gene_id", "symbol", "reference_id", "tas_id") FROM STDIN CSV HEADER NULL 'NULL';" sms_27
-# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_selectivity.csv.gz | psql --command="COPY lsp_selectivity ("lspci_id", "gene_id", "selectivity_class", "investigation_bias", "strength", "wilcox_pval", "selectivity", "tool_score", "ic50_difference", "ontarget_ic50_q1", "offtarget_ic50_q1", "ontarget_n", "offtarget_n") FROM STDIN CSV HEADER NULL 'NULL';" sms_27
-# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_one_dose_scans.csv.gz | psql --command="COPY lsp_one_dose_scans ("one_dose_scan_id", "one_dose_scan_agg_id", "lspci_id", "gene_id", "symbol", "source", "percent_control", "concentration", "reference_id") FROM STDIN CSV HEADER NULL 'NULL';" sms_27
-# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_one_dose_scan_agg.csv.gz | psql --command="COPY lsp_one_dose_scan_agg ("one_dose_scan_agg_id", "lspci_id", "gene_id", "symbol", "percent_control", "concentration", "value_unit", "tas_id") FROM STDIN CSV HEADER NULL 'NULL';" sms_27
-# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_clinical_info.csv.gz | psql --command="COPY lsp_clinical_info ("lspci_id", "max_phase", "first_approval", "oral", "parenteral", "topical", "black_box_warning", "first_in_class", "prodrug", "indication_class", "withdrawn_flag", "withdrawn_year", "withdrawn_country", "withdrawn_reason") FROM STDIN CSV HEADER NULL 'NULL';" sms_27
-# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_commercial_availability.csv.gz | psql --command="COPY lsp_commercial_availability ("lspci_id", "emolecules_id", "vendor", "catalog_number", "tier") FROM STDIN CSV HEADER NULL 'NULL';" sms_27
-# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_fingerprints.csv.gz | psql --command="COPY lsp_fingerprints ("lspci_id", "fingerprint_type", "fingerprint") FROM STDIN CSV HEADER NULL 'NULL';" sms_27
-# gunzip -cd /n/scratch3/users/c/ch305/sms/chembl_v27/lsp_compound_library.csv.gz | psql --command="COPY lsp_compound_library ("lspci_id", "gene_id", "rank", "reason_included") FROM STDIN CSV HEADER NULL 'NULL';" sms_27

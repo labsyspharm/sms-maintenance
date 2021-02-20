@@ -115,5 +115,5 @@ syn_folder <- synMkdir(syn_release, "raw_data", "literature_annotations")
 c(
   file.path(dir_release, "literature_annotations.csv.gz")
 ) %>%
-  synStoreMany(parentId = syn_folder, activity = activity)
+  synStoreMany(parentId = syn_folder, activity = activity, forceVersion = FALSE)
 

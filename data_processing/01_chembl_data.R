@@ -16,27 +16,18 @@ release <- "chembl_v27"
 dir_release <- here(release)
 syn_release <- synFindEntityId(release, "syn18457321")
 
+source(here("utils", "load_save.R"))
 
 # Set directories, import files ------------------------------------------------
 ###############################################################################T
 
 inputs <- list(
-  target_map = synPluck(syn_release, "id_mapping", "target_mapping.csv.gz")
-)
+  target_map = c("id_mapping", "target_mapping.csv.gz")
+) %>%
+  pluck_inputs(syn_parent = syn_release)
 
 input_data <- inputs %>%
-  map(syn) %>%
-  map(
-    function(x)
-      list(
-        `.csv` = partial(fread, colClasses = c(inchi_id = "integer")),
-        `.tsv` = fread,
-        `.rds` = read_rds
-      ) %>%
-      magrittr::extract2(which(str_detect(x, fixed(names(.))))) %>%
-      {.(x)}
-  )
-
+  load_input_data(syn = syn)
 
 # connect to chembl v. 24_1  ---------------------------------------------------
 ###############################################################################T
@@ -334,4 +325,4 @@ c(
   file.path(dir_release, "chembl_approval_info_raw.csv.gz"),
   file.path(dir_release, "chembl_ref_info_best_source.csv.gz")
 ) %>%
-  synStoreMany(parent = chembl_raw_syn, activity = fetch_chembl_activity)
+  synStoreMany(parent = chembl_raw_syn, activity = fetch_chembl_activity, forceVersion = FALSE)
