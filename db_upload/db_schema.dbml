@@ -223,11 +223,6 @@ Table lsp_references {
   }
 }
 
-Enum measurement_sources {
-  chembl
-  lsp
-}
-
 Table lsp_biochem {
   biochem_id int [pk, note:"Primary key"]
   biochem_agg_id int [
@@ -244,7 +239,7 @@ Table lsp_biochem {
   ]
   gene_id int [note:"Entrez gene ID"]
   symbol varchar [note:"Entrez gene symbol"]
-  source compound_sources [note:"Source for the measurement"]
+  source compound_sources [note:"Source of the measurement"]
   description_assay varchar [note:"Description of the assay that the measurement is derived from"]
   value float [note:"Measurement value"]
   value_type biochem_value_types [note:"The type of measurement performed."]

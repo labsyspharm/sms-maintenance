@@ -115,7 +115,7 @@ lsp_target_dictionary <- input_data[["target_dictionary"]] %>%
 
 lsp_target_mapping <- input_data[["target_map"]] %>%
   select(
-    lspci_target_id, gene_id = entrez_gene_id, entrez_synonyms, chembl_id, uniprot_id, target_type
+    lspci_target_id, chembl_id, uniprot_id, target_type
   ) %>%
   distinct() %>%
   arrange(lspci_target_id)
@@ -155,7 +155,7 @@ lsp_biochem <- input_data[["dose_response_measurements"]] %>%
     biochem_agg_id,
     lspci_id,
     lspci_target_id,
-    source = recode(measurement_source, chembl_activity = "chembl", inhouse_doseresponse = "lsp"),
+    source = recode(measurement_source, chembl_activity = "chembl", inhouse_doseresponse = "hmsl"),
     description_assay,
     value,
     value_type,
@@ -527,7 +527,8 @@ pwalk(
     #   message()
     cmd <- paste0(
       "gunzip -cd ", path, " | ~/software/postgresql/13.1/bin/psql --command=\"COPY ", name,
-      " FROM STDIN CSV HEADER NULL 'NULL';\" sms_27"
+      " (", paste("\"", colnames(table), "\"", sep = "", collapse = ", "), ")",
+      " FROM STDIN CSV HEADER NULL 'NA';\" sms_27"
     )
     message(cmd)
     write_lines(

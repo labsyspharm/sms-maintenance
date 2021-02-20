@@ -1,6 +1,6 @@
 -- SQL dump generated using DBML (dbml-lang.org)
 -- Database: PostgreSQL
--- Generated at: 2021-02-20T22:36:50.511Z
+-- Generated at: 2021-02-20T23:42:17.496Z
 
 CREATE TYPE "approval_tiers" AS ENUM (
   '0',
@@ -71,11 +71,6 @@ CREATE TYPE "reference_types" AS ENUM (
   'patent_id',
   'synapse_id',
   'hmsl_id'
-);
-
-CREATE TYPE "measurement_sources" AS ENUM (
-  'chembl',
-  'lsp'
 );
 
 CREATE TYPE "binding_data_types" AS ENUM (
@@ -594,7 +589,7 @@ COMMENT ON COLUMN "lsp_biochem"."gene_id" IS 'Entrez gene ID';
 
 COMMENT ON COLUMN "lsp_biochem"."symbol" IS 'Entrez gene symbol';
 
-COMMENT ON COLUMN "lsp_biochem"."source" IS 'Source for the measurement';
+COMMENT ON COLUMN "lsp_biochem"."source" IS 'Source of the measurement';
 
 COMMENT ON COLUMN "lsp_biochem"."description_assay" IS 'Description of the assay that the measurement is derived from';
 
