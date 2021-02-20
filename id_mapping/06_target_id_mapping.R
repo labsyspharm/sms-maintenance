@@ -154,39 +154,61 @@ gene_info_relevant <- gene_info %>%
 
 # Using gene symbols now for inital mapping, recovering more than with entrez IDs directly
 
-chembl_map_with_symbol <- chembl_map_with_uniprot %>%
-  inner_join(
-    uniprot_mapping_official %>%
-      filter(external_db == "Gene_Name") %>%
-      transmute(
-        organism,
-        uniprot_id,
-        symbol = external_id
-      ),
-    by = c("organism", "uniprot_id")
-  ) %>%
-  # Adding entrez_gene_id
+tax_id_organism_map <- chembl_map_with_uniprot %>%
+  distinct(tax_id, organism)
+
+uniprot_entrez_map <- bind_rows(
+  uniprot_mapping_official %>%
+    filter(external_db == "GeneID") %>%
+    inner_join(
+      tax_id_organism_map,
+      by = "organism"
+    ) %>%
+    transmute(
+      uniprot_id, entrez_gene_id = as.integer(external_id), tax_id
+    ),
+  uniprot_mapping_official %>%
+    filter(external_db == "Gene_Name") %>%
+    inner_join(
+      tax_id_organism_map,
+      by = "organism"
+    ) %>%
+    select(
+      uniprot_id, symbol = external_id, tax_id
+    ) %>%
+    inner_join(
+      gene_info_relevant %>%
+        select(entrez_gene_id, symbol = entrez_symbol, tax_id),
+      by = c("tax_id", "symbol")
+    ) %>%
+    select(uniprot_id, entrez_gene_id, tax_id)
+) %>%
+  drop_na(entrez_gene_id) %>%
   left_join(
-    gene_info_relevant,
-    by = c("tax_id", "symbol")
+    gene_info_relevant %>%
+      select(entrez_gene_id, symbol = entrez_symbol, entrez_synonyms),
+    by = "entrez_gene_id"
   ) %>%
-  # Add matches from directly mapping to entrez_gene_id
   bind_rows(
-    filter(chembl_map_with_uniprot, !uniprot_id %in% .[["uniprot_id"]]) %>%
-      left_join(
-        uniprot_mapping_official %>%
-          filter(external_db == "GeneID") %>%
-          transmute(
-            organism,
-            uniprot_id,
-            entrez_gene_id = as.integer(external_id)
-          ),
-        by = c("organism", "uniprot_id")
+      filter(
+        uniprot_mapping_official,
+        !uniprot_id %in% .[["uniprot_id"]],
+        external_db == "Gene_Name"
       ) %>%
-      left_join(
-        gene_info_relevant,
-        by = c("tax_id", "entrez_gene_id")
-      )
+        inner_join(tax_id_organism_map, by = "organism") %>%
+        select(
+          uniprot_id, symbol = external_id, tax_id
+        ) %>%
+        drop_na(symbol)
+  ) %>%
+  distinct(tax_id, entrez_gene_id, symbol, uniprot_id, entrez_synonyms)
+
+# add back matches where only symbol is available
+
+chembl_map_with_symbol <- chembl_map_with_uniprot %>%
+  left_join(
+    uniprot_entrez_map,
+    by = c("tax_id", "uniprot_id")
   ) %>%
   distinct()
 
@@ -238,15 +260,18 @@ map_chemblID_geneID <- chembl_map_with_symbol %>%
   # Append all human gene's not already in to cover genes that are not covered
   # in chembl but only in the LSP single doses etc
   bind_rows(
-    gene_info_relevant %>%
-      filter(
-        !entrez_gene_id %in% chembl_map_with_symbol$entrez_gene_id,
-        !symbol %in% chembl_map_with_symbol$symbol,
-        tax_id == 9606L,
-        entrez_type_of_gene == "protein-coding"
-      ) %>%
-      mutate(
-        organism = "Homo sapiens",
+    filter(
+      gene_info_relevant,
+      !entrez_gene_id %in% .$entrez_gene_id,
+      entrez_type_of_gene == "protein-coding"
+    ) %>%
+      inner_join(tax_id_organism_map, by = "tax_id") %>%
+      transmute(
+        tax_id,
+        entrez_gene_id,
+        symbol = entrez_symbol,
+        entrez_synonyms,
+        organism,
         pref_name = entrez_name,
         target_type = "SINGLE PROTEIN"
       )
@@ -256,15 +281,6 @@ map_chemblID_geneID <- chembl_map_with_symbol %>%
       #     transmute(organism, uniprot_id, entrez_gene_id = as.integer(external_id)),
       #   by = c("organism", "entrez_gene_id")
       # )
-  ) %>%
-  mutate(
-    symbol = if_else(
-      (symbol == "-" | is.na(symbol)) &
-        entrez_symbol != "-" &
-        !is.na(entrez_symbol),
-      entrez_symbol,
-      symbol
-    )
   ) %>%
   distinct() %>%
   arrange(entrez_gene_id) %>%
@@ -277,7 +293,9 @@ map_chemblID_geneID_table <- map_chemblID_geneID %>%
       ,
       .(
         lspci_target_id = .GRP,
-        pref_name = pref_name[1]
+        pref_name = pref_name %>%
+          na.omit() %>%
+          magrittr::extract(1)
       ),
       keyby = .(entrez_gene_id, symbol, tax_id, organism)
     ][
@@ -309,15 +327,11 @@ target_wrangling_activity <- Activity(
   executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/id_mapping/06_target_id_mapping.R"
 )
 
-syn_id_mapping <- synExtra::synPluck(syn_release, "id_mapping")
+syn_id_mapping <- synMkdir(syn_release, "id_mapping")
 
 list(
   file.path(dir_release, "target_dictionary_wide.csv.gz"),
   file.path(dir_release, "target_mapping.csv.gz")
 ) %>%
-  map(
-    . %>%
-      File(parent = syn_id_mapping) %>%
-      synStore(activity = target_wrangling_activity)
-  )
+  synStoreMany(syn_id_mapping, activity = target_wrangling_activity, forceVersion = FALSE)
 
