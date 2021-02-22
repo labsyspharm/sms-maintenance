@@ -1,6 +1,6 @@
 -- SQL dump generated using DBML (dbml-lang.org)
 -- Database: PostgreSQL
--- Generated at: 2021-02-20T23:42:17.496Z
+-- Generated at: 2021-02-22T19:59:04.984Z
 
 CREATE TYPE "approval_tiers" AS ENUM (
   '0',
@@ -90,7 +90,8 @@ CREATE TYPE "selectivity_classes" AS ENUM (
 CREATE TYPE "commercial_tiers" AS ENUM (
   'Tier 1',
   'Tier 2',
-  'Tier 3'
+  'Tier 3',
+  'Tier NA'
 );
 
 CREATE TYPE "fingerprint_types" AS ENUM (
@@ -251,6 +252,7 @@ CREATE TABLE "lsp_one_dose_scans" (
   "one_dose_scan_id" int PRIMARY KEY,
   "lspci_id" int,
   "lspci_target_id" int,
+  "source" compound_sources,
   "gene_id" int,
   "symbol" varchar,
   "percent_control" float,
@@ -266,7 +268,8 @@ CREATE TABLE "lsp_one_dose_scan_agg" (
   "gene_id" int,
   "symbol" varchar,
   "percent_control" float,
-  "concentration" float
+  "concentration" float,
+  "tas_id" int
 );
 
 CREATE TABLE "lsp_clinical_info" (
@@ -335,7 +338,7 @@ ALTER TABLE "lsp_phenotypic" ADD FOREIGN KEY ("lspci_id") REFERENCES "lsp_compou
 
 ALTER TABLE "lsp_phenotypic" ADD FOREIGN KEY ("reference_id") REFERENCES "lsp_references" ("reference_id");
 
-ALTER TABLE "lsp_phenotypic" ADD FOREIGN KEY ("phenotypic_agg_id") REFERENCES "lsp_biochem_agg" ("biochem_agg_id");
+ALTER TABLE "lsp_phenotypic" ADD FOREIGN KEY ("phenotypic_agg_id") REFERENCES "lsp_phenotypic_agg" ("phenotypic_agg_id");
 
 ALTER TABLE "lsp_phenotypic_agg" ADD FOREIGN KEY ("lspci_id") REFERENCES "lsp_compound_dictionary" ("lspci_id");
 
@@ -368,6 +371,8 @@ ALTER TABLE "lsp_one_dose_scans" ADD FOREIGN KEY ("one_dose_scan_agg_id") REFERE
 ALTER TABLE "lsp_one_dose_scan_agg" ADD FOREIGN KEY ("lspci_id") REFERENCES "lsp_compound_dictionary" ("lspci_id");
 
 ALTER TABLE "lsp_one_dose_scan_agg" ADD FOREIGN KEY ("lspci_target_id") REFERENCES "lsp_target_dictionary" ("lspci_target_id");
+
+ALTER TABLE "lsp_one_dose_scan_agg" ADD FOREIGN KEY ("tas_id") REFERENCES "lsp_tas" ("tas_id");
 
 ALTER TABLE "lsp_clinical_info" ADD FOREIGN KEY ("lspci_id") REFERENCES "lsp_compound_dictionary" ("lspci_id");
 
@@ -476,6 +481,8 @@ CREATE INDEX ON "lsp_one_dose_scans" ("one_dose_scan_id");
 CREATE INDEX ON "lsp_one_dose_scan_agg" ("lspci_id");
 
 CREATE INDEX ON "lsp_one_dose_scan_agg" ("lspci_target_id");
+
+CREATE INDEX ON "lsp_one_dose_scan_agg" ("tas_id");
 
 CREATE INDEX ON "lsp_one_dose_scan_agg" ("lspci_id", "lspci_target_id");
 
@@ -723,6 +730,8 @@ COMMENT ON COLUMN "lsp_one_dose_scans"."lspci_id" IS 'Foreign key for compound I
 
 COMMENT ON COLUMN "lsp_one_dose_scans"."lspci_target_id" IS 'Foreign key for gene ID';
 
+COMMENT ON COLUMN "lsp_one_dose_scans"."source" IS 'Source of the measurement';
+
 COMMENT ON COLUMN "lsp_one_dose_scans"."gene_id" IS 'Entrez gene ID';
 
 COMMENT ON COLUMN "lsp_one_dose_scans"."symbol" IS 'Entrez gene symbol';
@@ -752,6 +761,8 @@ COMMENT ON COLUMN "lsp_one_dose_scan_agg"."symbol" IS 'Entrez gene symbol';
 COMMENT ON COLUMN "lsp_one_dose_scan_agg"."percent_control" IS 'Aggregated remaining activity of target at the given compound concentration.';
 
 COMMENT ON COLUMN "lsp_one_dose_scan_agg"."concentration" IS 'Concentration of the compound in the assay.';
+
+COMMENT ON COLUMN "lsp_one_dose_scan_agg"."tas_id" IS 'Foreign key to lsp_tas table. Indicates that this value was used to calculate the referenced TAS.';
 
 COMMENT ON TABLE "lsp_clinical_info" IS 'Table of the clinical approval status of compounds.     Sourced from ChEMBL';
 

@@ -203,6 +203,16 @@ lsp_phenotypic <- input_data[["phenotypic_measurements"]] %>%
     by = c("lspci_id", "assay_id"),
     check = "bcvmn"
   ) %>%
+  rename(
+    reference_value = reference_id
+  ) %>%
+  safe_left_join(
+    lsp_references %>%
+      select(reference_type, reference_value, reference_id) %>%
+      distinct(),
+    by = c("reference_type", "reference_value"),
+    check = "cbm"
+  ) %>%
   select(
     phenotypic_id = measurement_id,
     lspci_id,
@@ -285,7 +295,7 @@ lsp_one_dose_scans <- input_data[["single_dose_measurements"]] %>%
     one_dose_scan_agg_id,
     lspci_id,
     lspci_target_id,
-    source = recode(measurement_source, chembl_activity = "chembl", inhouse_single_dose = "lsp"),
+    source = recode(measurement_source, chembl_activity = "chembl", inhouse_single_dose = "hmsl"),
     percent_control,
     concentration = cmpd_conc_nM,
     reference_id
@@ -313,7 +323,6 @@ lsp_one_dose_scan_agg <- input_data[["single_dose_q1"]] %>%
     lspci_id, lspci_target_id,
     percent_control = percent_control_Q1,
     concentration = cmpd_conc_nM,
-    value_unit = "nM",
     tas_id
   ) %>%
   distinct() %>%
@@ -340,12 +349,12 @@ lsp_clinical_info <- input_data[["approval"]] %>%
   arrange(lspci_id)
 
 lsp_commercial_availability <- input_data[["commercial_info"]] %>%
-  select(
+  transmute(
     lspci_id,
     emolecules_id,
     vendor = supplier_name,
     catalog_number,
-    tier
+    tier = paste("Tier", tier)
   ) %>%
   distinct() %>%
   arrange(lspci_id)
@@ -437,16 +446,16 @@ tables <- tribble(
   "lsp_target_dictionary", c("target_dictionary"),
   "lsp_target_mapping", c("target_map"),
   "lsp_references", c("references"),
-  "lsp_biochem", c("dose_response_measurements", "dose_response_q1_measurements", "references"),
-  "lsp_biochem_agg", c("dose_response_q1", "dose_response_q1_measurements", "tas"),
-  "lsp_phenotypic", c("phenotypic_measurements", "phenotypic_q1_measurements"),
-  "lsp_phenotypic_agg", c("phenotypic_q1", "phenotypic_q1_measurements"),
   "lsp_tas", c("tas"),
-  "lsp_tas_references", c("tas", "single_dose_q1_references", "dose_response_q1_references", "manual_curation", "references"),
-  "lsp_manual_curation", c("manual_curation", "tas", "references"),
-  "lsp_selectivity", c("selectivity"),
-  "lsp_one_dose_scans", c("single_dose_measurements", "single_dose_q1_measurements", "references"),
+  "lsp_biochem_agg", c("dose_response_q1", "dose_response_q1_measurements", "tas"),
+  "lsp_biochem", c("dose_response_measurements", "dose_response_q1_measurements", "references"),
   "lsp_one_dose_scan_agg", c("single_dose_q1", "single_dose_q1_measurements", "tas"),
+  "lsp_one_dose_scans", c("single_dose_measurements", "single_dose_q1_measurements", "references"),
+  "lsp_phenotypic_agg", c("phenotypic_q1", "phenotypic_q1_measurements"),
+  "lsp_phenotypic", c("phenotypic_measurements", "phenotypic_q1_measurements"),
+  "lsp_manual_curation", c("manual_curation", "tas", "references"),
+  "lsp_tas_references", c("tas", "single_dose_q1_references", "dose_response_q1_references", "manual_curation", "references"),
+  "lsp_selectivity", c("selectivity"),
   "lsp_clinical_info", c("approval"),
   "lsp_commercial_availability", c("commercial_info"),
   "lsp_fingerprints", c("fingerprints"),
@@ -457,13 +466,18 @@ tables <- tribble(
       table_inputs,
       ~inputs[.x]
     ),
-    table = map(
-      name,
-      get
-    ) %>%
-      # Add symbol, gene_id for all tables with lspci_target_id
+    table = name %>%
+      set_names() %>%
       map(
-        ~if (!"lspci_target_id" %in% names(.x) || any(c("gene_id", "symbol") %in% names(.x)))
+        get
+      ) %>%
+      # Add symbol, gene_id for all tables with lspci_target_id
+      imap(
+        ~if (
+          .y == "lsp_target_mapping" ||
+          !"lspci_target_id" %in% names(.x) ||
+          any(c("gene_id", "symbol") %in% names(.x))
+        )
           .x
         else
           safe_left_join(
@@ -508,7 +522,8 @@ pwalk(
     )
     synStoreMany(
       path, parentId = syn_db_tables_parent,
-      activity = activity
+      activity = activity,
+      forceVersion = FALSE
     )
   }
 )

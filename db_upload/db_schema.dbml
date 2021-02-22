@@ -318,7 +318,7 @@ Table lsp_phenotypic {
     note:"Foreing key to the ls_reference table for this measurement."
   ]
   phenotypic_agg_id int [
-    ref: > lsp_biochem_agg.biochem_agg_id,
+    ref: > lsp_phenotypic_agg.phenotypic_agg_id,
      note:"Foreign key to lsp_phenotypic_agg table. All measurements with the same ID are aggregated."
   ]
 
@@ -509,6 +509,7 @@ Table lsp_one_dose_scans {
     ref: > lsp_target_dictionary.lspci_target_id,
     note:"Foreign key for gene ID"
   ]
+  source compound_sources [note:"Source of the measurement"]
   gene_id int [note:"Entrez gene ID"]
   symbol varchar [note:"Entrez gene symbol"]
   percent_control float [note:"Remaining activity of target at the given compound concentration."]
@@ -549,6 +550,10 @@ Table lsp_one_dose_scan_agg {
   symbol varchar [note:"Entrez gene symbol"]
   percent_control float [note:"Aggregated remaining activity of target at the given compound concentration."]
   concentration float [note:"Concentration of the compound in the assay."]
+  tas_id int [
+    ref: > lsp_tas.tas_id,
+    note:"Foreign key to lsp_tas table. Indicates that this value was used to calculate the referenced TAS."
+  ]
 
   Note:'''
     Table of single dose compound activity measurements as \
@@ -560,6 +565,7 @@ Table lsp_one_dose_scan_agg {
   Indexes {
     lspci_id
     lspci_target_id
+    tas_id
     (lspci_id, lspci_target_id)
     one_dose_scan_agg_id
   }
@@ -599,6 +605,7 @@ Enum commercial_tiers {
   "Tier 1" [note:"Ships within one week."]
   "Tier 2" [note:"Ships within two weeks."]
   "Tier 3" [note:"Ships within a month."]
+  "Tier NA" [note:"Unkown shipping time"]
 }
 
 Table lsp_commercial_availability {
