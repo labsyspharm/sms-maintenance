@@ -346,6 +346,8 @@ Table lsp_phenotypic_agg {
   assay_id int [note:"Unique ID of the assays in the database. Correspond to ChEMBL assay IDs."]
   value float [note:"Aggregated measurement value"]
   value_unit biochem_value_units [note:"The unit of the measurement."]
+  rscore float [note:"Standardized measurement value."]
+  rscore_tr float [note: "Rscore normalized using a double logistic function."]
 
   Note:'''
     Table of aggregated phenotypic assays performed on the compounds.

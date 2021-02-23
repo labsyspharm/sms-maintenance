@@ -1,6 +1,6 @@
 -- SQL dump generated using DBML (dbml-lang.org)
 -- Database: PostgreSQL
--- Generated at: 2021-02-22T19:59:04.984Z
+-- Generated at: 2021-02-23T01:07:50.500Z
 
 CREATE TYPE "approval_tiers" AS ENUM (
   '0',
@@ -203,7 +203,9 @@ CREATE TABLE "lsp_phenotypic_agg" (
   "lspci_id" int,
   "assay_id" int,
   "value" float,
-  "value_unit" biochem_value_units
+  "value_unit" biochem_value_units,
+  "rscore" float,
+  "rscore_tr" float
 );
 
 CREATE TABLE "lsp_tas" (
@@ -663,6 +665,10 @@ COMMENT ON COLUMN "lsp_phenotypic_agg"."assay_id" IS 'Unique ID of the assays in
 COMMENT ON COLUMN "lsp_phenotypic_agg"."value" IS 'Aggregated measurement value';
 
 COMMENT ON COLUMN "lsp_phenotypic_agg"."value_unit" IS 'The unit of the measurement.';
+
+COMMENT ON COLUMN "lsp_phenotypic_agg"."rscore" IS 'Standardized measurement value.';
+
+COMMENT ON COLUMN "lsp_phenotypic_agg"."rscore_tr" IS 'Rscore normalized using a double logistic function.';
 
 COMMENT ON TABLE "lsp_tas" IS 'Table of Target Affinity Spectrum (TAS) values for the affinity between     compound and target. TAS enables aggregation of affinity measurements from     heterogeneous sources and assays into a single value. See     10.1016/j.chembiol.2019.02.018 for details.';
 

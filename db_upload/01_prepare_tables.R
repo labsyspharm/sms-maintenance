@@ -34,7 +34,6 @@ replace_empty_string_na <- function(df) {
 inputs <- list(
   target_dictionary = c("id_mapping", "target_dictionary_wide.csv.gz"),
   target_map = c("id_mapping", "target_mapping.csv.gz"),
-  target_map = c("id_mapping", "target_mapping.csv.gz"),
   compound_dictionary = c("compounds_processed", "compound_dictionary.csv.gz"),
   fingerprints = c("compounds_processed", "lspci_id_fingerprints.csv.gz"),
   selectivity = c("selectivity", "selectivity.csv.gz"),
@@ -47,7 +46,8 @@ inputs <- list(
   tas_measurement_map = c("tas", "tas_measurement_map.csv.gz"),
   commercial_info = c("vendors", "lspci_id_compound_commercial_info.csv.gz"),
   manual_curation = c("raw_data", "literature_annotations", "literature_annotations.csv.gz"),
-  references = c("reference_table")
+  references = c("reference_table"),
+  rscores = c("pfp_similarity", "phenotypic_rscores.csv.gz")
 ) %>%
   c(
     c(
@@ -233,12 +233,19 @@ lsp_phenotypic_agg <- input_data[["phenotypic_q1"]] %>%
     by = c("lspci_id", "assay_id"),
     check = "bcuvmn"
   ) %>%
+  safe_left_join(
+    input_data[["rscores"]],
+    by = c("lspci_id", "assay_id"),
+    check = "bcuvn"
+  ) %>%
   transmute(
     phenotypic_agg_id,
     lspci_id,
     assay_id,
     value = value_Q1,
-    value_unit = "nM"
+    value_unit = "nM",
+    rscore,
+    rscore_tr
   ) %>%
   distinct() %>%
   arrange(lspci_id, assay_id)
@@ -451,7 +458,7 @@ tables <- tribble(
   "lsp_biochem", c("dose_response_measurements", "dose_response_q1_measurements", "references"),
   "lsp_one_dose_scan_agg", c("single_dose_q1", "single_dose_q1_measurements", "tas"),
   "lsp_one_dose_scans", c("single_dose_measurements", "single_dose_q1_measurements", "references"),
-  "lsp_phenotypic_agg", c("phenotypic_q1", "phenotypic_q1_measurements"),
+  "lsp_phenotypic_agg", c("phenotypic_q1", "phenotypic_q1_measurements", "rscores"),
   "lsp_phenotypic", c("phenotypic_measurements", "phenotypic_q1_measurements"),
   "lsp_manual_curation", c("manual_curation", "tas", "references"),
   "lsp_tas_references", c("tas", "single_dose_q1_references", "dose_response_q1_references", "manual_curation", "references"),
