@@ -4,6 +4,7 @@ library(fst)
 library(here)
 library(synapser)
 library(synExtra)
+library(morgancpp)
 
 synLogin()
 syn <- synDownloader(here("tempdl"), followLink = TRUE)
@@ -46,7 +47,7 @@ inputs <- synPluck(syn_release, "db_tables") %>%
   )
 
 input_data <- inputs %>%
-  magrittr::extract(names(.) != "lsp_fingerprints") %>%
+  # magrittr::extract(names(.) != "lsp_fingerprints") %>%
   load_input_data(syn = syn) %>%
   map(replace_empty_string_na)
 
@@ -102,6 +103,15 @@ targets <- input_data[["lsp_target_dictionary"]][
   )
 ] %>%
   setkey(lspci_target_id)
+
+target_map <- targets %>%
+  melt(
+    measure.vars = c("gene_id", "symbol"),
+    variable.name = "type",
+    value.name = "name",
+    na.rm = TRUE
+  ) %>%
+  setkey(name)
 
 pfp <- input_data[["lsp_phenotypic_agg"]][
   !is.na(rscore_tr) & is.finite(rscore_tr),
@@ -242,10 +252,71 @@ chemical_probes <- input_data[["chemical_probes"]][
   drop_na() %>%
   setkey(lspci_target_id, lspci_id)
 
+fps <- syn("syn24874143") %>%
+  fread()
+
+fingerprints_morgan_normal <- fps[
+  fingerprint_type == "morgan_normal"
+] %>% {
+  set_names(.[["fingerprint"]], .[["lspci_id"]])
+}
+
+qsave(
+  fingerprints_morgan_normal,
+  file.path(dir_release, "fps.qs"),
+  preset = "fast"
+)
+
+fingerprints <- MorganFPS$new(
+  fingerprints_morgan_normal
+)
+
+fingerprints_small <- MorganFPS$new(
+  fingerprints_morgan_normal[1:100000]
+)
+
+fingerprints_small$save_file(
+  file.path(dir_release, "website_tables", paste0("shiny_fingerprints_small.bin")),
+  compression_level = 9
+)
+
+
+library(microbenchmark)
+microbenchmark(
+  fingerprints_small$save_file(
+    file.path(dir_release, "website_tables", paste0("shiny_fingerprints_small.bin")),
+    compression_level = 10
+  ), times = 3L
+)
+
+
+fingerprints$save_file(
+  file.path(dir_release, "website_tables", paste0("shiny_fingerprints.bin")),
+  compression_level = 9
+)
+
+x <- MorganFPS$new(
+  file.path(dir_release, "website_tables", paste0("shiny_fingerprints_small.bin")),
+  from_file = TRUE
+)
+
+library(microbenchmark)
+microbenchmark(
+  x <- MorganFPS$new(
+    file.path(dir_release, "website_tables", paste0("shiny_fingerprints_small.bin")),
+    from_file = TRUE
+  ), times = 3L
+)
+
+x <- MorganFPS$new(
+  file.path(dir_release, "website_tables", paste0("shiny_fingerprints.bin")),
+  from_file = TRUE
+)
+
 # Assemble tables --------------------------------------------------------------
 ###############################################################################T
 
-all_tables <- tribble(
+all_table_names <- tribble(
   ~name,
   "compounds",
   "inchis",
@@ -255,15 +326,29 @@ all_tables <- tribble(
   "tas",
   "selectivity",
   "library",
-  "chemical_probes"
+  "chemical_probes",
+  "target_map"
 ) %>%
+  mutate(
+    path = file.path(dir_release, "website_tables", paste0("shiny_", name, ".fst"))
+  )
+
+all_tables <- all_table_names %>%
   mutate(
     table = map(
       name,
       get,
       env = .GlobalEnv
-    ),
-    path = file.path(dir_release, "website_tables", paste0("shiny_", name, ".fst"))
+    )
+  )
+
+all_tables <- all_table_names %>%
+  mutate(
+    table = map(
+      path,
+      read_fst,
+      as.data.table = TRUE
+    )
   )
 
 dir.create(file.path(dir_release, "website_tables"))
