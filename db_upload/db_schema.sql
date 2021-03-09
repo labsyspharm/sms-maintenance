@@ -1,6 +1,6 @@
 -- SQL dump generated using DBML (dbml-lang.org)
 -- Database: PostgreSQL
--- Generated at: 2021-02-23T01:07:50.500Z
+-- Generated at: 2021-03-09T14:29:54.189Z
 
 CREATE TYPE "approval_tiers" AS ENUM (
   '0',
@@ -113,7 +113,7 @@ CREATE TABLE "lsp_compound_dictionary" (
   "pref_name" varchar,
   "inchi" varchar,
   "commercially_available" boolean,
-  "highest_approval" approval_tiers
+  "max_phase" approval_tiers
 );
 
 CREATE TABLE "lsp_structures" (
@@ -520,7 +520,7 @@ COMMENT ON COLUMN "lsp_compound_dictionary"."inchi" IS 'InChI chemical indentifi
 
 COMMENT ON COLUMN "lsp_compound_dictionary"."commercially_available" IS 'Indicates that compound is commercially available at a vendor in the eMolecules database';
 
-COMMENT ON COLUMN "lsp_compound_dictionary"."highest_approval" IS 'Approval and clinical trial status of the compound.';
+COMMENT ON COLUMN "lsp_compound_dictionary"."max_phase" IS 'Approval and clinical trial status of the compound.';
 
 COMMENT ON TABLE "lsp_structures" IS 'Additional secondary InChIs for compounds.';
 

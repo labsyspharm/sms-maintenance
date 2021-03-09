@@ -81,7 +81,7 @@ input_data <- inputs %>%
 lsp_compound_dictionary <- input_data[["compound_dictionary"]] %>%
   select(
     lspci_id, hmsl_id, chembl_id, emolecules_id, pref_name,
-    inchi = canonical_inchi, commercially_available, highest_approval = max_phase
+    inchi = canonical_inchi, commercially_available, max_phase
   ) %>%
   arrange(lspci_id)
 

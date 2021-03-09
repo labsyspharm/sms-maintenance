@@ -1,6 +1,25 @@
 Project sms_db {
   database_type: 'PostgreSQL'
-  Note: "A database of small molecule target binding data and commercial availability."
+  Note: '''# Small Molecule Suite
+
+  **Based on ChEMBL v27**
+
+  The [Small Molecule Suite (SMS)](https://labsyspharm.shinyapps.io/smallmoleculesuite/)
+  is a free, open-acces tool developed
+  by the [Harvard Program in Therapeutic Sciences (HiTS)](https://hits.harvard.edu/).
+
+  The database contains all data underlying SMS.
+
+  The goal of the SMS is to help scientists understand and work with the targets
+  of molecular probes, approved drugs and other drug-like molecules, while
+  acknowledging the complexity of polypharmacology — the phenomenon that
+  virtually all drug-like molecules bind multiple target proteins.
+
+  SMS combines data from the ChEMBL database with prepublished data from the
+  Laboratory of Systems pharmacology. The methodology of calculating
+  selectivities and similarities are explained in Moret et al. Cell Chem Biol
+  2019 (which can also be used to cite the Small Molecule Suite).
+  '''
 }
 
 Enum approval_tiers {
@@ -24,7 +43,7 @@ Table lsp_compound_dictionary {
   commercially_available boolean [
     note:"Indicates that compound is commercially available at a vendor in the eMolecules database"
   ]
-  highest_approval approval_tiers [note:"Approval and clinical trial status of the compound."]
+  max_phase approval_tiers [note:"Approval and clinical trial status of the compound."]
 
   Note: '''
     Primary table listing all compounds in the database. \
