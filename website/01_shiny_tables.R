@@ -54,9 +54,13 @@ input_data <- inputs %>%
 # Create tables ----------------------------------------------------------------
 ###############################################################################T
 
+sigfig <- function(vec, n = 3){
+  as.numeric(gsub("\\.$", "", formatC(signif(vec, digits = n), digits = n,format = "fg", flag = "#")))
+}
+
 compounds <- input_data[["lsp_compound_dictionary"]][
   ,
-  .(lspci_id, chembl_id, emolecules_id, pref_name, commercially_available, highest_approval)
+  .(lspci_id, chembl_id, emolecules_id, pref_name, commercially_available, max_phase)
 ] %>%
   setkey(lspci_id)
 
@@ -69,29 +73,35 @@ inchis <- input_data[["lsp_compound_dictionary"]][
 compound_names <- copy(input_data[["lsp_compound_names"]])[
   ,
   `:=`(
-    source = factor(source, levels = c("chembl", "hsml", "emolecules")),
-    priority = NULL
+    source = factor(source, levels = c("chembl", "hmsl", "emolecules"))
   )
 ] %>% unique() %>% {
   .[
-    order(lspci_id, name, source)
+    order(lspci_id, name, priority, source)
   ][
     ,
-    .SD[source == source[1]],
+    .SD[source == source[1] & priority == priority[1]],
     keyby = .(lspci_id, name)
   ][
+    order(lspci_id, priority, source, name)
+  ][
     ,
-    name_id := paste(lspci_id, seq_len(.N), sep = "_"),
+    name_id := paste(lspci_id, seq_len(.N), sep = "-"),
     keyby = .(lspci_id)
   ][
     ,
     # Make compound names unique
     unique_name := if (.N > 1) paste0(name, "{{", seq_len(.N), "}}") else name,
     keyby = .(name)
+  ][
+    order(
+      # Reorder data.table so that some nice normal compounds are at the front
+      !name_id %in% c("16241-1", "78621-1", "90319-1", "96316-1", "76418-1", "78036-1", "83706-1", "81903-1", "72090-1", "97590-1"),
+      priority, source, name
+    )
   ]
 } %>%
-  select(lspci_id, source, name_id, name = unique_name) %>%
-  setkey(name)
+  select(lspci_id, priority, source, name_id, name = unique_name)
 
 targets <- input_data[["lsp_target_dictionary"]][
   ,
@@ -110,12 +120,33 @@ target_map <- targets %>%
     variable.name = "type",
     value.name = "name",
     na.rm = TRUE
-  ) %>%
-  setkey(name)
+  ) %>% {
+    .[
+      ,
+      type := factor(type, levels = c("symbol", "gene_id"))
+    ][
+      ,
+      # Make unique target id
+      lspci_target_id_unique := paste(lspci_target_id, seq_len(.N), sep = "-"),
+      keyby = .(lspci_target_id)
+    ][
+      # Reorder data.table so that some nice normal targets are at the front
+      order(
+        type,
+        !lspci_target_id %in% c(2525, 487, 34, 1373, 4620, 160, 4950, 1479, 5123, 2407),
+        lspci_target_id,
+        name
+      )
+    ]
+  }
 
 pfp <- input_data[["lsp_phenotypic_agg"]][
   !is.na(rscore_tr) & is.finite(rscore_tr),
-  .(lspci_id, assay_id, rscore_tr)
+  .(
+    lspci_id,
+    assay_id,
+    sigfig(rscore_tr)
+  )
 ][
   # Remove any assay with less than 6 compounds
   ,
@@ -124,9 +155,40 @@ pfp <- input_data[["lsp_phenotypic_agg"]][
 ] %>%
   setkey(assay_id, lspci_id)
 
+tas_measurements <- rbindlist(list(
+  input_data[["lsp_one_dose_scan_agg"]][
+    !is.na(tas_id),
+    .(
+      tas_id,
+      measurement = sigfig(percent_control, 2),
+      unit = paste0("% control at ", concentration, " nM")
+    )
+  ],
+  input_data[["lsp_biochem_agg"]][
+    !is.na(tas_id),
+    .(
+      tas_id,
+      measurement = sigfig(as.numeric(value), 2),
+      unit = paste0("nM")
+    )
+  ],
+  input_data[["lsp_manual_curation"]][
+    !is.na(tas_id),
+    .(
+      tas_id,
+      measurement = NA_real_,
+      unit = NA_character_
+    )
+  ]
+))
+
 tas <- input_data[["lsp_tas"]][
   ,
-  .(tas_id, lspci_id, lspci_target_id, tas)
+  .(tas_id, lspci_id, lspci_target_id, tas, derived_from)
+][
+  tas_measurements,
+  on = .(tas_id),
+  nomatch = NULL
 ][
   input_data[["lsp_tas_references"]][
     input_data[["lsp_references"]][
@@ -149,7 +211,7 @@ tas <- input_data[["lsp_tas"]][
   nomatch = NULL
 ][
   ,
-  .(lspci_id, lspci_target_id, tas, references)
+  .(lspci_id, lspci_target_id, tas, measurement, unit, derived_from, references)
 ] %>%
   setkey(lspci_id, lspci_target_id)
 
@@ -187,6 +249,14 @@ selectivity <-  input_data[["lsp_selectivity"]][
   on = .(lspci_id, lspci_target_id),
   nomatch = NULL
 ] %>%
+  mutate(
+    across(
+      c(investigation_bias, wilcox_pval, selectivity, tool_score,
+        ic50_difference, ontarget_ic50_q1, offtarget_ic50_q1),
+      ~as.numeric(.x) %>%
+        sigfig()
+    )
+  ) %>%
   setkey(lspci_id, lspci_target_id)
 
 library <- input_data[["lsp_compound_library"]][
@@ -195,7 +265,7 @@ library <- input_data[["lsp_compound_library"]][
 ][
   compounds[
     ,
-    .(lspci_id, highest_approval)
+    .(lspci_id, max_phase)
   ],
   on = .(lspci_id),
   nomatch = NULL
@@ -236,6 +306,13 @@ library <- input_data[["lsp_compound_library"]][
   on = .(lspci_id, lspci_target_id),
   nomatch = NULL
 ] %>%
+  mutate(
+    across(
+      c(ontarget_ic50_q1, offtarget_ic50_q1),
+      ~as.numeric(.x) %>%
+        sigfig()
+    )
+  ) %>%
   setkey(lspci_target_id, rank)
 
 chemical_probes <- input_data[["chemical_probes"]][
@@ -252,65 +329,91 @@ chemical_probes <- input_data[["chemical_probes"]][
   drop_na() %>%
   setkey(lspci_target_id, lspci_id)
 
-fps <- syn("syn24874143") %>%
-  fread()
+# qsave(
+#   fingerprints_morgan_normal,
+#   file.path(dir_release, "fps.qs"),
+#   preset = "fast"
+# )
+#
+# fingerprints <- MorganFPS$new(
+#   fingerprints_morgan_normal
+# )
+#
+# fingerprints_small <- MorganFPS$new(
+#   fingerprints_morgan_normal[1:100000]
+# )
+#
+# fingerprints_small$save_file(
+#   file.path(dir_release, "website_tables", paste0("shiny_fingerprints_small.bin"))
+# )
+#
+#
+# library(microbenchmark)
+# microbenchmark(
+#   fingerprints_small$save_file(
+#     file.path(dir_release, "website_tables", paste0("shiny_fingerprints_small.bin")),
+#     compression_level = 10
+#   ), times = 3L
+# )
+#
+#
+# fingerprints$save_file(
+#   file.path(dir_release, "website_tables", paste0("shiny_fingerprints.bin"))
+# )
+#
+# x <- MorganFPS$new(
+#   file.path(dir_release, "website_tables", paste0("shiny_fingerprints_small.bin")),
+#   from_file = TRUE
+# )
+#
+# library(microbenchmark)
+# microbenchmark(
+#   x <- MorganFPS$new(
+#     file.path(dir_release, "website_tables", paste0("shiny_fingerprints_small.bin")),
+#     from_file = TRUE
+#   ), times = 3L
+# )
+#
+# x <- MorganFPS$new(
+#   file.path(dir_release, "website_tables", paste0("shiny_fingerprints.bin")),
+#   from_file = TRUE
+# )
 
-fingerprints_morgan_normal <- fps[
-  fingerprint_type == "morgan_normal"
-] %>% {
-  set_names(.[["fingerprint"]], .[["lspci_id"]])
-}
+
+# Chemfp FBP fingerprint file --------------------------------------------------
+###############################################################################T
+#
+# unloadNamespace("synExtra")
+# unloadNamespace("synapser")
+# unloadNamespace("PythonEmbedInR")
+#
+# library(reticulate)
+# use_python("~/miniconda/envs/lspcheminf/bin/python3.7", required = TRUE)
+#
+# main <- import_main()
+# builtins <- import_builtins()
+# chemfp <- import("chemfp")
+#
+# arena <- chemfp$load_fingerprints(py$, format = "fpb.gz", allow_mmap = TRUE)
+
+# Restrict compound space to compounds with annotation -------------------------
+###############################################################################T
+
+eligible_lspci_ids <- c(
+  compounds[
+    !is.na(chembl_id)
+  ][["lspci_id"]],
+  pfp[["lspci_id"]],
+  selectivity[["lspci_id"]],
+  library[["lspci_id"]],
+  tas[["lspci_id"]],
+  chemical_probes[["lspci_id"]]
+) %>%
+  unique()
 
 qsave(
-  fingerprints_morgan_normal,
-  file.path(dir_release, "fps.qs"),
-  preset = "fast"
-)
-
-fingerprints <- MorganFPS$new(
-  fingerprints_morgan_normal
-)
-
-fingerprints_small <- MorganFPS$new(
-  fingerprints_morgan_normal[1:100000]
-)
-
-fingerprints_small$save_file(
-  file.path(dir_release, "website_tables", paste0("shiny_fingerprints_small.bin")),
-  compression_level = 9
-)
-
-
-library(microbenchmark)
-microbenchmark(
-  fingerprints_small$save_file(
-    file.path(dir_release, "website_tables", paste0("shiny_fingerprints_small.bin")),
-    compression_level = 10
-  ), times = 3L
-)
-
-
-fingerprints$save_file(
-  file.path(dir_release, "website_tables", paste0("shiny_fingerprints.bin")),
-  compression_level = 9
-)
-
-x <- MorganFPS$new(
-  file.path(dir_release, "website_tables", paste0("shiny_fingerprints_small.bin")),
-  from_file = TRUE
-)
-
-library(microbenchmark)
-microbenchmark(
-  x <- MorganFPS$new(
-    file.path(dir_release, "website_tables", paste0("shiny_fingerprints_small.bin")),
-    from_file = TRUE
-  ), times = 3L
-)
-
-x <- MorganFPS$new(
-  file.path(dir_release, "website_tables", paste0("shiny_fingerprints.bin")),
-  from_file = TRUE
+  eligible_lspci_ids,
+  file.path(dir_release, "eligible_lspci_ids.qs")
 )
 
 # Assemble tables --------------------------------------------------------------
@@ -339,17 +442,28 @@ all_tables <- all_table_names %>%
       name,
       get,
       env = .GlobalEnv
-    )
+    ) %>%
+      # Only take coompounds with annotation
+      map(
+        ~{
+          if ("lspci_id" %in% colnames(.x))
+            .x[
+              lspci_id %in% eligible_lspci_ids
+            ]
+          else
+            .x
+        }
+      )
   )
 
-all_tables <- all_table_names %>%
-  mutate(
-    table = map(
-      path,
-      read_fst,
-      as.data.table = TRUE
-    )
-  )
+# all_tables <- all_table_names %>%
+#   mutate(
+#     table = map(
+#       path,
+#       read_fst,
+#       as.data.table = TRUE
+#     )
+#   )
 
 dir.create(file.path(dir_release, "website_tables"))
 
@@ -365,6 +479,31 @@ pwalk(
   }
 )
 
+# Fingerprints -----------------------------------------------------------------
+###############################################################################T
+
+fps <- input_data[["lsp_fingerprints"]]
+
+fingerprints_morgan_normal <- fps[
+  fingerprint_type == "morgan_normal" & lspci_id %in% eligible_lspci_ids
+] %>% {
+  set_names(.[["fingerprint"]], .[["lspci_id"]])
+}
+
+fingerprints <- MorganFPS$new(
+  fingerprints_morgan_normal
+)
+
+fingerprints$save_file(
+  file.path(dir_release, "website_tables", paste0("shiny_fingerprints.bin")),
+  compression_level = 22
+)
+
+# fps <- MorganFPS$new(
+#   file.path(dir_release, "website_tables", paste0("shiny_fingerprints.bin")),
+#   from_file = TRUE
+# )
+
 # Upload to synapse ------------------------------------------------------------
 ###############################################################################T
 
@@ -377,7 +516,10 @@ activity <- Activity(
 syn_dir <- synMkdir(syn_release, "website_tables")
 
 synStoreMany(
-  all_tables[["path"]],
+  c(
+    all_tables[["path"]],
+    file.path(dir_release, "website_tables", paste0("shiny_fingerprints.bin"))
+  ),
   syn_dir,
   activity = activity,
   forceVersion = FALSE
