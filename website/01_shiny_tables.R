@@ -60,7 +60,19 @@ sigfig <- function(vec, n = 3){
 
 compounds <- input_data[["lsp_compound_dictionary"]][
   ,
-  .(lspci_id, chembl_id, emolecules_id, pref_name, commercially_available, max_phase)
+  .(
+    lspci_id,
+    chembl_id,
+    emolecules_id,
+    pref_name = fcoalesce(
+      pref_name,
+      chembl_id,
+      hmsl_id,
+      paste0("Emolecules: ", emolecules_id)
+    ),
+    commercially_available,
+    max_phase
+  )
 ] %>%
   setkey(lspci_id)
 
@@ -70,18 +82,35 @@ inchis <- input_data[["lsp_compound_dictionary"]][
 ] %>%
   setkey(lspci_id)
 
-compound_names <- copy(input_data[["lsp_compound_names"]])[
+compound_names <- rbindlist(list(
+  input_data[["lsp_compound_names"]],
+  input_data[["lsp_compound_mapping"]][
+    source %chin% c("emolecules", "chembl", "hmsl"),
+    .(
+      lspci_id,
+      source = paste0(source, "_id"),
+      priority = "secondary",
+      name = external_id
+    )
+  ]
+), fill = TRUE)[
   ,
   `:=`(
-    source = factor(source, levels = c("chembl", "hmsl", "emolecules"))
+    source = factor(source, levels = c("chembl", "hmsl", "emolecules", "chembl_id", "hmsl_id", "emolecules_id"))
   )
 ] %>% unique() %>% {
   .[
     order(lspci_id, name, priority, source)
-  ][
-    ,
-    .SD[source == source[1] & priority == priority[1]],
-    keyby = .(lspci_id, name)
+  ]
+} %>% {
+  # Only keep identical names from the highest source and priority
+  .[
+    # Self join. V1 is logical vector of the desired entries
+    .[
+      ,
+      source == source[1] & priority == priority[1],
+      by = .(lspci_id, name)
+    ]$V1
   ][
     order(lspci_id, priority, source, name)
   ][
@@ -124,6 +153,8 @@ target_map <- targets %>%
     .[
       ,
       type := factor(type, levels = c("symbol", "gene_id"))
+    ][
+      order(lspci_target_id, type, name)
     ][
       ,
       # Make unique target id
@@ -415,6 +446,8 @@ qsave(
   eligible_lspci_ids,
   file.path(dir_release, "eligible_lspci_ids.qs")
 )
+
+# eligible_lspci_ids <- qread(file.path(dir_release, "eligible_lspci_ids.qs"))
 
 # Assemble tables --------------------------------------------------------------
 ###############################################################################T
