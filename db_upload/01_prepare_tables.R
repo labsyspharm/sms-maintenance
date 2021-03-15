@@ -1,5 +1,6 @@
 library(tidyverse)
 library(data.table)
+library(fst)
 library(here)
 library(synapser)
 library(synExtra)
@@ -38,7 +39,7 @@ inputs <- list(
   fingerprints = c("compounds_processed", "lspci_id_fingerprints.csv.gz"),
   selectivity = c("selectivity", "selectivity.csv.gz"),
   approval = c("clinical_info", "lspci_id_approval.csv.gz"),
-  compound_names = c("compounds_processed", "lspci_id_compound_compound_names_ranked.csv.gz"),
+  compound_names = c("compounds_processed", "lspci_id_compound_names_ranked.csv.gz"),
   vendor_ids = c("compounds_processed", "lspci_id_vendor_id_map.csv.gz"),
   optimal_library = c("compound_library", "optimal_library_combined.csv.gz"),
   inchis = c("compounds_processed", "lspci_id_canonical_inchis_ranked.csv.gz"),
@@ -71,6 +72,7 @@ inputs <- list(
   pluck_inputs(syn_parent = syn_release)
 
 input_data <- inputs %>%
+  # references is synapse table, don't load here
   magrittr::extract(names(.) != "references") %>%
   load_input_data(syn = syn) %>%
   map(replace_empty_string_na)
@@ -495,20 +497,29 @@ tables <- tribble(
             check = "bcvm"
           )
       ),
-    path = file.path(
+    path_csv = file.path(
       dir_release,
       paste0(name, ".csv.gz")
+    ),
+    path_fst = file.path(
+      dir_release,
+      paste0(name, ".fst")
     )
   )
 
 pwalk(
   tables,
-  function(name, table, path, ...) {
+  function(name, table, path_csv, path_fst, ...) {
     message("Writing ", name)
     fwrite(
       table,
-      path,
+      path_csv,
       na = "NA"
+    )
+    write_fst(
+      table,
+      path_fst,
+      compress = 100
     )
   }
 )
@@ -520,7 +531,7 @@ syn_db_tables_parent <- synMkdir(syn_release, "db_tables")
 
 pwalk(
   tables,
-  function(name, path, syn_used, ...) {
+  function(name, path_csv, path_fst, syn_used, ...) {
     message("Uploading ", name)
     activity <- Activity(
       name = "Wrangle tables for postgresql import",
@@ -528,7 +539,96 @@ pwalk(
       executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/db_upload/01_prepare_tables.R"
     )
     synStoreMany(
-      path, parentId = syn_db_tables_parent,
+      c(path_csv, path_fst), parentId = syn_db_tables_parent,
+      activity = activity,
+      forceVersion = FALSE
+    )
+  }
+)
+
+# Only compounds with activities annotated -------------------------------------
+###############################################################################T
+
+eligible_lspci_ids <- tables %>%
+  filter(
+    name %in% c(
+      "lsp_tas",
+      "lsp_biochem",
+      "lsp_one_dose_scans",
+      "lsp_phenotypic",
+      "lsp_manual_curation",
+      "lsp_compound_library"
+    )
+  ) %>%
+  pull(table) %>%
+  map("lspci_id") %>%
+  reduce(union)
+
+# eligible_lspci_ids <- syn("syn25173730") %>%
+#   read_fst() %>%
+#   pull(lspci_id)
+
+dir.create(file.path(dir_release, "selected_compounds"))
+
+tables_annotated_compounds <- tables %>%
+  filter(
+    name %in% c(
+      "lsp_compound_dictionary",
+      "lsp_structures",
+      "lsp_compound_names",
+      "lsp_compound_mapping",
+      "lsp_commercial_availability",
+      "lsp_fingerprints"
+    )
+  ) %>%
+  mutate(
+    table = map(
+      table,
+      ~filter(.x, lspci_id %in% eligible_lspci_ids)
+    ),
+    path_csv = file.path(
+      dir_release, "selected_compounds",
+      paste0(name, ".csv.gz")
+    ),
+    path_fst = file.path(
+      dir_release, "selected_compounds",
+      paste0(name, ".fst")
+    )
+  )
+
+pwalk(
+  tables_annotated_compounds,
+  function(name, table, path_csv, path_fst, ...) {
+    message("Writing ", name)
+    fwrite(
+      table,
+      path_csv,
+      na = "NA"
+    )
+    write_fst(
+      table,
+      path_fst,
+      compress = 100
+    )
+  }
+)
+
+# Store to synapse -------------------------------------------------------------
+###############################################################################T
+
+syn_db_tables_parent <- synMkdir(syn_release, "db_tables", "selected_compounds")
+
+pwalk(
+  tables_annotated_compounds,
+  function(name, path_csv, path_fst, syn_used, ...) {
+    message("Uploading ", name)
+    activity <- Activity(
+      name = "Wrangle tables for postgresql import",
+      used = unname(syn_used),
+      executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/db_upload/01_prepare_tables.R"
+    )
+    synStoreMany(
+      c(path_csv, path_fst), parentId = syn_db_tables_parent,
       activity = activity,
       forceVersion = FALSE
     )

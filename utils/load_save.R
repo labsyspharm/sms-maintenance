@@ -3,6 +3,7 @@ library(data.table)
 library(qs)
 library(openxlsx)
 library(synapser)
+library(fst)
 
 
 load_input_data <- function(inputs, syn) {
@@ -23,7 +24,8 @@ load_input_data <- function(inputs, syn) {
           `.tsv` = fread,
           `.rds` = read_rds,
           `.qs` = qread,
-          `.xlsx` = read.xlsx
+          `.xlsx` = read.xlsx,
+          `.fst` = read_fst
         ) %>%
         magrittr::extract2(which(str_detect(x, fixed(names(.))))) %>% {
           df <- .(x)
