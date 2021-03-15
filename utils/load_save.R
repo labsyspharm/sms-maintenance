@@ -25,7 +25,7 @@ load_input_data <- function(inputs, syn) {
           `.rds` = read_rds,
           `.qs` = qread,
           `.xlsx` = read.xlsx,
-          `.fst` = read_fst
+          `.fst` = partial(read_fst, as.data.table = TRUE)
         ) %>%
         magrittr::extract2(which(str_detect(x, fixed(names(.))))) %>% {
           df <- .(x)

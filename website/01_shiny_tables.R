@@ -30,11 +30,12 @@ replace_empty_string_na <- function(df) {
 
 inputs <- synPluck(syn_release, "db_tables") %>%
   synGetChildren() %>%
-  as.list() %>% {
+  as.list() %>%
+  keep(~str_detect(.x[["name"]], fixed(".fst"))) %>% {
     set_names(
       map_chr(., "id"),
       map_chr(., "name") %>%
-        str_replace(fixed(".csv.gz"), "")
+        str_replace(fixed(".fst"), "")
     )
   } %>%
   c(
