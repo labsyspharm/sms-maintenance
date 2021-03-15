@@ -119,13 +119,14 @@ all_names_ranked <- copy(input_data[["lspci_id_compound_name_map"]])[
   ,
   `:=`(
     source = factor(source, levels = VENDOR_RANKING),
-    canonical_member = lspci_id %in% canonical_members[["lspci_id"]],
+    canonical_member = id %in% canonical_members[["vendor_id"]],
     inchi_id = NULL
   )
 ] %>%
   unique() %>% {
     .[
       order(
+        lspci_id,
         -canonical_member,
         source,
         match(name_preference, c("primary", "secondary")),
@@ -141,10 +142,10 @@ all_names_ranked <- copy(input_data[["lspci_id_compound_name_map"]])[
 
 fwrite(
   all_names_ranked,
-  file.path(dir_release, "lspci_id_compound_compound_names_ranked.csv.gz")
+  file.path(dir_release, "lspci_id_compound_names_ranked.csv.gz")
 )
 
-# all_names_ranked <- fread(file.path(dir_release, "lspci_id_compound_compound_names_ranked.csv.gz"))
+# all_names_ranked <- fread(file.path(dir_release, "lspci_id_compound_names_ranked.csv.gz"))
 
 canonical_names <- all_names_ranked[
   name_rank == 1L
@@ -187,6 +188,8 @@ fwrite(
   file.path(dir_release, "lspci_id_canonical_inchis_ranked.csv.gz")
 )
 
+# canonical_inchis_ranked <- fread(file.path(dir_release, "lspci_id_canonical_inchis_ranked.csv.gz"))
+
 # Create table of approval data ------------------------------------------------
 ###############################################################################T
 
@@ -212,6 +215,7 @@ fwrite(
   file.path(dir_release, "lspci_id_max_approval.csv.gz")
 )
 
+# approval_table <- fread(file.path(dir_release, "lspci_id_max_approval.csv.gz"))
 
 # Create table of canonical compounds ------------------------------------------
 ###############################################################################T
@@ -307,7 +311,7 @@ syn_id_mapping <- synMkdir(syn_release, "compounds_processed")
 c(
   file.path(dir_release, "lspci_id_canonical_members_ranked.csv.gz"),
   file.path(dir_release, "lspci_id_canonical_members.csv.gz"),
-  file.path(dir_release, "lspci_id_compound_compound_names_ranked.csv.gz"),
+  file.path(dir_release, "lspci_id_compound_names_ranked.csv.gz"),
   file.path(dir_release, "lspci_id_canonical_compound_names.csv.gz"),
   file.path(dir_release, "lspci_id_canonical_inchis_ranked.csv.gz"),
   file.path(dir_release, "compound_dictionary.csv.gz"),
