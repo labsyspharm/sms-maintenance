@@ -596,6 +596,39 @@ tables_annotated_compounds <- tables %>%
     )
   )
 
+# tables_annotated_compounds <- c(
+#   "lsp_compound_dictionary",
+#   "lsp_structures",
+#   "lsp_compound_names",
+#   "lsp_compound_mapping",
+#   "lsp_commercial_availability",
+#   "lsp_fingerprints"
+# ) %>%
+#   enframe(name = NULL, value = "name") %>%
+#   mutate(
+#     table = pluck_inputs(
+#       map(name, ~c("db_tables", paste0(.x, ".fst"))) %>%
+#         set_names(name),
+#       syn_parent = syn_release
+#     ) %>%
+#       load_input_data(syn = syn) %>%
+#       map(replace_empty_string_na)
+#   ) %>%
+#   mutate(
+#     table = map(
+#       table,
+#       ~filter(.x, lspci_id %in% eligible_lspci_ids)
+#     ),
+#     path_csv = file.path(
+#       dir_release, "selected_compounds",
+#       paste0(name, ".csv.gz")
+#     ),
+#     path_fst = file.path(
+#       dir_release, "selected_compounds",
+#       paste0(name, ".fst")
+#     )
+#   )
+
 pwalk(
   tables_annotated_compounds,
   function(name, table, path_csv, path_fst, ...) {
