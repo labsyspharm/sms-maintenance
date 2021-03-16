@@ -71,6 +71,21 @@ standard_unit_map <- c(
 ) %>%
   magrittr::multiply_by(10^9)
 
+approved_standard_types <- c(
+  "Kd apparent",
+  "IC50",
+  "Ki",
+  "EC50",
+  "Kd",
+  "IC90",
+  "CC50",
+  "ID50",
+  "AC50",
+  "Inhibition",
+  "Potency",
+  "Activity",
+  "ED50"
+)
 
 activities_biochem_1 <- dbGetQuery(
   con,
@@ -96,8 +111,7 @@ activities_biochem_1 <- dbGetQuery(
      and A.relationship_type in ('D', 'H', 'M', 'U')
      and A.bao_format not in ('BAO_0000221', 'BAO_0000219','BAO_0000218')
      and ACT.standard_units in (", paste(paste0("'", names(standard_unit_map), "'"), collapse = ","), ")
-     and ACT.standard_type in ('IC50','Ki','EC50','Kd','IC90','CC50','ID50','AC50','Inhibition','MIC','Potency','Activity','ED50')
-     and A.assay_cell_type is NULL"
+     and ACT.standard_type in (", paste(paste0("'", approved_standard_types, "'"), collapse = ","), ")"
   )
 )
 
@@ -130,8 +144,10 @@ activities_biochem <- data.table::rbindlist(
   list(
     activities_biochem_1 %>%
       filter(standard_value > 0) %>%
+      # Don't allow standard_value above 100k
       mutate(
-        standard_value = standard_value / standard_unit_map[standard_units],
+        standard_value = (standard_value / standard_unit_map[standard_units]) %>%
+          pmin(100000),
         # log10_value = log10(standard_value * standard_unit_map[standard_units]),
         standard_units = "nM"
       ),
