@@ -149,6 +149,8 @@ fwrite(
   file.path(dir_release, "toolscores.csv.gz")
 )
 
+# toolscore_all <- fread(file.path(dir_release, "toolscores.csv.gz"))
+
 # Calculating selectivity classes ----------------------------------------------
 ###############################################################################T
 

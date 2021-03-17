@@ -177,7 +177,7 @@ pfp <- input_data[["lsp_phenotypic_agg"]][
   .(
     lspci_id,
     assay_id,
-    sigfig(rscore_tr)
+    rscore_tr
   )
 ][
   # Remove any assay with less than 6 compounds
@@ -358,6 +358,22 @@ chemical_probes <- input_data[["chemical_probes"]][
   ,
   .(lspci_id, lspci_target_id, n_reviews, max_rating, link)
 ] %>%
+  merge(
+    input_data[["lsp_selectivity"]][
+      ,
+      .(lspci_id, lspci_target_id, selectivity_class, ontarget_ic50_q1, ontarget_n)
+    ],
+    by = c("lspci_id", "lspci_target_id"),
+    all.x = TRUE
+  ) %>%
+  merge(
+    input_data[["lsp_compound_dictionary"]][
+      ,
+      .(lspci_id, max_phase)
+    ],
+    by = c("lspci_id"),
+    all.x = TRUE
+  ) %>%
   drop_na() %>%
   setkey(lspci_target_id, lspci_id)
 
@@ -533,7 +549,7 @@ fingerprints$save_file(
   compression_level = 22
 )
 
-# fps <- MorganFPS$new(
+# f <- MorganFPS$new(
 #   file.path(dir_release, "website_tables", paste0("shiny_fingerprints.bin")),
 #   from_file = TRUE
 # )
