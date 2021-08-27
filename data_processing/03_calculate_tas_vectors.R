@@ -8,7 +8,7 @@ library(synapser)
 library(synExtra)
 
 synLogin()
-syn <- synDownloader(here("tempdl"))
+syn <- synDownloader(here("tempdl"), ifcollision = "overwrite.local")
 
 release <- "chembl_v27"
 dir_release <- here(release)
@@ -65,14 +65,13 @@ dose_response_tas <- input_data[["dose_response_q1"]] %>%
       TRUE ~ NA_integer_
     ),
     unit = "nM",
-    measurement = as.numeric(sigfig(Q1)),
-    temp_tas_id = seq_len(n())
+    measurement = as.numeric(sigfig(Q1))
   )
 
 single_dose_tas <- input_data[["single_dose_q1"]] %>%
   mutate(
     tas = case_when(
-      cmpd_conc_nM == 10000 & percent_control_Q1 >= 75 ~ 10L,
+      cmpd_conc_nM == 10000 & percent_control_Q1 >= 50 ~ 10L,
       cmpd_conc_nM == 10000 & percent_control_Q1 < 0.1 ~ 2L,
       cmpd_conc_nM == 1000 & percent_control_Q1 >= 90 ~ 10L,
       cmpd_conc_nM == 1000 & percent_control_Q1 < 1 ~ 2L,
@@ -94,11 +93,13 @@ single_dose_tas[
 # Thre are a few cases where there is contradicting info.
 # In this case, take the minimum TAS. According to Nienke false positives
 # are less likely than false negatives so this seems like the prudent approach.
+# Only retain a single measurement as source for TAS. In case of ties
+# measurement at lowest concentration.
 
 single_dose_tas_agg <- single_dose_tas[
   order(tas, cmpd_conc_nM),
   .SD[
-    tas == tas[1],
+    1L,
     .(
       tas,
       unit = paste0("% at ", cmpd_conc_nM, " nM"),
@@ -107,27 +108,20 @@ single_dose_tas_agg <- single_dose_tas[
     )
   ],
   by = .(lspci_id, lspci_target_id)
-][
-  ,
-  temp_tas_id := .GRP,
-  by = .(lspci_id, lspci_target_id)
 ]
 
 combined_tas <- rbindlist(
   list(
     dose_response = dose_response_tas,
     single_dose = single_dose_tas_agg,
-    literature_annotation = copy(input_data[["literature_annotations"]])[
-      ,
-      temp_tas_id := seq_len(.N)
-    ]
+    literature_annotation = input_data[["literature_annotations"]]
   ),
   idcol = "source",
   use.names = TRUE,
   fill = TRUE
 )[
   ,
-  .(lspci_id, lspci_target_id, tas, unit, measurement, n_measurement, source, temp_tas_id)
+  .(lspci_id, lspci_target_id, tas, unit, measurement, n_measurement, source, cmpd_conc_nM)
 ] %>%
   unique()
 
@@ -137,9 +131,9 @@ TAS_SOURCE_ORDER <- c(
   "literature_annotation"
 )
 
-# Prefer results from full affinity measuremennts over the percent inhibition
+# Prefer results from full affinity measurements over the percent inhibition
 # When incorporating Verena's manual annotatations, prefer affinity data.
-# If affinity data not present, take minimum of of Verena + percent control
+# Only if affinity data not present, take minimum of of Verena + percent control
 combined_tas_agg <- copy(combined_tas)[
   ,
   `:=`(
@@ -163,7 +157,7 @@ combined_tas_agg <- copy(combined_tas)[
 ][
   ,
   .(
-    temp_tas_id, tas_id, lspci_id, lspci_target_id, tas, unit, measurement, n_measurement, source
+    tas_id, lspci_id, lspci_target_id, tas, unit, measurement, n_measurement, source, cmpd_conc_nM
   )
 ] %>%
   left_join(
@@ -173,9 +167,14 @@ combined_tas_agg <- copy(combined_tas)[
     by = "lspci_target_id"
   )
 
+# Check there's only a single value for every compound / target combo
+combined_tas_agg %>%
+  count(lspci_id, lspci_target_id) %>%
+  count(n)
+
 fwrite(
   combined_tas_agg %>%
-    select(-temp_tas_id),
+    select(-cmpd_conc_nM),
   file.path(dir_release, "tas_vector.csv.gz")
 )
 
@@ -190,33 +189,20 @@ all_q1_measurements <-   c(
   map(~input_data[[.x]]) %>%
   rbindlist(fill = TRUE, idcol = "source")
 
-tas_measurement_map <- merge(
-  combined_tas_agg,
-  single_dose_tas_agg[
-    ,
-    .(
-      temp_tas_id,
-      cmpd_conc_nM,
-      source = "single_dose"
-    )
+tas_measurement_map <- all_q1_measurements[
+  combined_tas_agg[
+    , .(lspci_id, lspci_target_id, source, tas_id, cmpd_conc_nM)
   ],
-  by = c("temp_tas_id", "source"),
-  all.x = TRUE
-) %>%
-  merge(
-    all_q1_measurements[
-      ,
-      .(measurement_id, cmpd_conc_nM, source, lspci_id, lspci_target_id)
-    ],
-    by = c("lspci_id", "lspci_target_id", "cmpd_conc_nM", "source"),
-    all.x = TRUE
-  ) %>% {
-    .[
-      ,
-      .(source, tas_id, measurement_id)
-    ]
-  } %>%
-  unique()
+  nomatch = NULL, on = c("lspci_id", "lspci_target_id", "source", "cmpd_conc_nM")
+][, .(source, tas_id, measurement_id)]
+
+# Check that all tas values have a measurement associated with it
+combined_tas_agg[
+  !tas_id %in% tas_measurement_map$tas_id
+]
+
+# Check that there's no NAs
+drop_na(tas_measurement_map)
 
 fwrite(
   tas_measurement_map,
