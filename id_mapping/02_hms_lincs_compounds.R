@@ -6,11 +6,13 @@ library(here)
 library(synapser)
 library(synExtra)
 library(lspcheminf)
+library(data.table)
+library(qs)
 
 synLogin()
 syn <- synDownloader(here("tempdl"))
 
-release <- "chembl_v27"
+release <- "chembl_v29"
 dir_release <- here(release)
 syn_release <- synFindEntityId(release, "syn18457321")
 
@@ -53,6 +55,13 @@ rt_df <- rt_response %>%
     n_batches = map_int(batches, length)
   )
 
+# 2021-09-09
+# SMILES for belvarafenib is wrong
+setDT(rt_df)[
+  name == "Belvarafenib",
+  smiles := "CC1=C(C2=C(C=C1)C(=NC=C2)NC3=C(C(=CC=C3)Cl)F)NC(=O)C4=CSC5=C4N=CN=C5N"
+]
+
 # Convert smiles to inchi, where no inchi is provided
 rt_df_inchi <- rt_df %>%
   mutate(
@@ -68,9 +77,9 @@ rt_df_inchi <- rt_df %>%
   # Some inchis have newline characters at the end of line, remove them
   mutate(inchi = trimws(inchi))
 
-write_rds(
+qsave(
   rt_df_inchi,
-  file.path(dir_release, "hmsl_compounds_raw.rds")
+  file.path(dir_release, "hmsl_compounds_raw.qs")
 )
 # rt_df_inchi <- read_rds(file.path(dir_release, "hmsl_compounds_raw.rds"))
 
@@ -83,6 +92,6 @@ fetch_hmsl_activity <- Activity(
 )
 
 c(
-  file.path(dir_release, "hmsl_compounds_raw.rds")
+  file.path(dir_release, "hmsl_compounds_raw.qs")
 ) %>%
-  synStoreMany(parent = synMkdir(syn_release, "raw_data"), activity = fetch_hmsl_activity)
+  synStoreMany(parent = synMkdir(syn_release, "raw_data"), activity = fetch_hmsl_activity, forceVersion = FALSE)

@@ -6,14 +6,16 @@ library(bit64)
 library(jsonlite)
 library(data.table)
 library(here)
+library(qs)
 library(synapser)
 library(synExtra)
 
 synLogin()
 syn <- synDownloader(here("tempdl"))
 
-release <- "chembl_v27"
+release <- "chembl_v29"
 dir_release <- here(release)
+dir.create(dir_release)
 syn_release <- synMkdir("syn18457321", release)
 
 ## in terminal: ssh -L 5433:pgsql96.orchestra:5432 nm192@transfer.rc.hms.harvard.edu
@@ -22,9 +24,11 @@ syn_release <- synMkdir("syn18457321", release)
 drv <- dbDriver("Postgres")
 # creates a connection to the postgres database
 # note that "con" will be used later in each connection to the database
-con <- dbConnect(drv, dbname = "chembl_27",
+con <- dbConnect(drv, dbname = "chembl_29",
                  host = "localhost", port = 5432,
                  user = "chug")
+
+# pg_restore --no-owner -h localhost -p 5432 -U chug -d chembl_29 chembl_29_postgresql.dmp
 
 # Fetch Chembl compound data ---------------------------------------------------
 ###############################################################################T
@@ -65,10 +69,9 @@ all_cmpds <- all_cmpds %>%
     by = "molregno"
   )
 
-write_rds(
+qsave(
   all_cmpds,
-  file.path(dir_release, "chembl_compounds_raw.rds"),
-  compress = "gz"
+  file.path(dir_release, "chembl_compounds_raw.qs")
 )
 
 # all_cmpds <- read_rds(file.path(dir_release, "chembl_compounds_raw.rds"))
@@ -80,17 +83,13 @@ write_rds(
 
 fetch_chembl_activity <- Activity(
   name = "Fetch ChEMBL compound data",
-  used = "ftp://ftp.ebi.ac.uk/pub/databases/chembl/ChEMBLdb/releases/chembl_27/chembl_27_postgresql.tar.gz",
+  used = "ftp://ftp.ebi.ac.uk/pub/databases/chembl/ChEMBLdb/releases/chembl_29/chembl_29_postgresql.tar.gz",
   executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/id_mapping/01_chembl_compounds.R"
 )
 
 syn_raw <- synMkdir(syn_release, "raw_data")
 
-list(
-  file.path(dir_release, "chembl_compounds_raw.rds")
+c(
+  file.path(dir_release, "chembl_compounds_raw.qs")
 ) %>%
-  map(
-    . %>%
-      File(parent = syn_raw) %>%
-      synStore(activity = fetch_chembl_activity)
-  )
+  synStoreMany(parentId = syn_raw, activity = fetch_chembl_activity, forceVersion = FALSE)

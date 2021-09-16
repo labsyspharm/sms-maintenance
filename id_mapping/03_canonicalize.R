@@ -13,7 +13,7 @@ library(qs)
 synLogin()
 syn <- synDownloader(here("tempdl"))
 
-release <- "chembl_v27"
+release <- "chembl_v29"
 dir_release <- here(release)
 syn_release <- synFindEntityId(release, "syn18457321")
 
@@ -23,21 +23,21 @@ dir.create(dir_release, showWarnings = FALSE)
 ###############################################################################T
 
 inputs <- list(
-  chembl_compounds = synPluck(syn_release, "raw_data", "chembl_compounds_raw.rds"),
-  hmsl_compounds = synPluck(syn_release, "raw_data", "hmsl_compounds_raw.rds"),
+  chembl_compounds = synPluck(syn_release, "raw_data", "chembl_compounds_raw.qs"),
+  hmsl_compounds = synPluck(syn_release, "raw_data", "hmsl_compounds_raw.qs"),
   emolecules_compounds = synPluck(syn_release, "id_mapping", "emolecules", "emolecules_compounds.csv.gz"),
-  old_sms_compounds = "syn21094266"
+  old_sms_compounds = "syn24874054"
 )
 
 raw_compounds <- tribble(
   ~source, ~data,
   "chembl", inputs[["chembl_compounds"]] %>%
     syn() %>%
-    read_rds() %>%
+    qread() %>%
     distinct(id = chembl_id, inchi = standard_inchi),
   "hmsl", inputs[["hmsl_compounds"]] %>%
     syn() %>%
-    read_rds() %>%
+    qread() %>%
     distinct(id = hms_id, inchi),
   "emolecules", inputs[["emolecules_compounds"]] %>%
     syn() %>%
@@ -69,7 +69,8 @@ all_inchis <- raw_compounds %>%
   # ) %>%
   pull(data) %>%
   map(pull, inchi) %>%
-  reduce(union)
+  reduce(union) %>%
+  magrittr::extract(. != "")
 
 # remaining_inchis <- raw_compounds %>%
 #   filter(source == "old_sms") %>%
@@ -95,7 +96,7 @@ all_inchis_dfs <- tibble(compound = all_inchis) %>%
 pwalk(
   all_inchis_dfs,
   function(data, input_file, ...)
-    write_csv(data, input_file)
+    fwrite(data, input_file)
 )
 
 # Set up jobs
@@ -157,9 +158,10 @@ submitJobs(
     # Approximately 58 compounds processed per minute
     # With 10,000 compounds per batch, should take 172 min, use 250 min
     # Turns out uses much less time, 45 min enough
-    walltime = 3*60*60,
+    walltime = 45*60,
     chunks.as.arrayjobs = TRUE
     # # For some reason these nodes fail to execute R because of an "illegal instruction"
+    # No longer an issue when using the O2 version of R
     # exclude = "compute-f-17-[09-25]"
   )
 )
@@ -203,7 +205,7 @@ fwrite(
 compounds_all <- canonical_inchis %>%
   # filter(raw_inchi %in% remaining_inchis) %>%
   # Compute chemical formula
-  drop_na(raw_inchi) %>%
+  filter(!is.na(raw_inchi), raw_inchi != "") %>%
   mutate(
     formula = canonical_inchi %>%
       str_split_fixed(fixed("/"), 3) %>%
@@ -215,7 +217,7 @@ compounds_all <- canonical_inchis %>%
     # at least 3 carbons
     organic = map_int(formula_vector, ~if ("C" %in% names(.x)) .x[["C"]] else 0L) >= 3,
     canonical_inchi = if_else(
-      is.na(canonical_inchi) | !organic,
+      is.na(canonical_inchi) | !organic | canonical_inchi == "",
       raw_inchi,
       canonical_inchi
     ),
@@ -268,9 +270,7 @@ activity <- Activity(
   executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/id_mapping/03_canonicalize.R"
 )
 
-syn_id_mapping <- Folder("canonicalization", parent = syn_release) %>%
-  synStore() %>%
-  chuck("properties", "id")
+syn_id_mapping <- synMkdir(syn_release, "canonicalization")
 
 c(
   file.path(dir_release, "raw_compounds_all.qs"),
@@ -279,5 +279,5 @@ c(
   file.path(dir_release, "inchi_id_vendor_map.csv.gz"),
   file.path(dir_release, "canonical_inchi_ids.csv.gz")
 ) %>%
-  synStoreMany(parent = syn_id_mapping, activity = activity)
+  synStoreMany(parent = syn_id_mapping, activity = activity, forceVersion = FALSE)
 

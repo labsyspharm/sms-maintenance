@@ -1,17 +1,18 @@
 library(tidyverse)
-library(dtplyr)
+library(data.table)
 library(here)
 library(synapser)
 library(synExtra)
 library(vroom)
 library(httr)
 library(lspcheminf)
-
+library(furrr)
+library(qs)
 
 synLogin()
 syn <- synDownloader(here("tempdl"))
 
-release <- "chembl_v27"
+release <- "chembl_v29"
 dir_release <- here(release)
 syn_release <- synFindEntityId(release, "syn18457321")
 
@@ -22,7 +23,7 @@ dir.create(dir_emolecules, showWarnings = FALSE)
 # Download Emolecules tables -------------------------------------------------
 ###############################################################################T
 
-emolecules_base_url <- "https://downloads.emolecules.com/harvard/plus_data/with_prohibited/2020-11-01/"
+emolecules_base_url <- "https://downloads.emolecules.com/harvard/plus_data/with_prohibited/2021-07-01/"
 emolecules_file_names <- c(
   "sample.tsv.gz",
   "suppliers.tsv.gz",
@@ -54,27 +55,28 @@ emolecules_files <- emolecules_file_names %>%
 parent_molecules <- fread(
   file.path(dir_emolecules, "parent.smi.gz"), sep = " "
 ) %>%
-  rename(smiles = isosmiles)
+  setnames("isosmiles", "smiles")
 
+plan(multicore(workers = 6))
 parent_molecules_inchi <- parent_molecules %>%
-  chunk_df(10, seed = 1) %>%
-  map(
+  chunk_df(100, seed = 1) %>%
+  future_map(
     ~convert_compound_descriptor(
       compounds(
         set_names(.x[["smiles"]], .x[["parent_id"]]),
-        descriptor = "smiles",
-        keep_invalid = TRUE
+        descriptor = "smiles"
       ),
       target_descriptor = "inchi"
     ) %>%
-      transmute(parent_id = as.double(names), inchi = compounds)
+      transmute(parent_id = as.double(names), inchi = compounds),
+    .progress = TRUE
   ) %>%
   bind_rows()
 
-# write_rds(
-#   parent_molecules_inchi,
-#   file.path(dir_emolecules, "parent_molecules_inchi.csv.gz")
-# )
+fwrite(
+  parent_molecules_inchi,
+  file.path(dir_emolecules, "parent_molecules_inchi.csv.gz")
+)
 
 parent_molecules_both <- parent_molecules %>%
   left_join(
@@ -88,61 +90,52 @@ parent_molecules_both <- parent_molecules %>%
 # Only keep building blocks and commercial compounds, avoid screening compounds
 # because they are often only for purchase in large plate format
 
-emolecules_files[["sample"]] %>%
-  lazy_dt(key_by = c(supplier_id, catalog_id)) %>%
-  group_by(supplier_id, catalog_id) %>%
-  summarize(n = n()) %>%
-  inner_join(
-    emolecules_files[["catalog_tiers"]] %>%
-      lazy_dt(key_by = c(supplier_id, catalogue_id)) %>%
-      select(supplier_id, catalogue_id, tier_name),
-    by = c("supplier_id", "catalog_id" = "catalogue_id")
-  ) %>%
-  group_by(tier_name) %>%
-  summarize(n = sum(n)) %>%
-  as_tibble()
+emolecules_files[["sample"]][
+  , .(n = .N),
+  keyby = .(supplier_id, catalog_id)
+][
+  emolecules_files[["catalog_tiers"]][
+    , .(supplier_id, catalog_id, tier_name)
+  ]
+][
+  , .(n = sum(n)),
+  keyby = .(tier_name)
+]
 
-# tier_name        n .groups
-# <chr>        <int> <chr>
-# 1 Tier 1     9358467 drop
-# 2 Tier 2     7343877 drop
-# 3 Tier 3    10875927 drop
-# 4 Tier 4     8950202 drop
-# 5 Tier 5      665524 drop
+# tier_name        n
+# 1:    Tier 1 10225528
+# 2:    Tier 2  7360614
+# 3:    Tier 3 15971147
+# 4:    Tier 4  8804148
+# 5:    Tier 5   400161
 
-emolecules_files[["sample"]] %>%
-  lazy_dt(key_by = c(catalog_id)) %>%
-  group_by(catalog_id) %>%
-  summarize(n = n()) %>%
-  inner_join(
-    emolecules_files[["catalog_categories"]] %>%
-      lazy_dt(key_by = c(catalog_id)) %>%
-      select(catalog_id, category_id),
-    by = c("catalog_id")
-  ) %>%
-  group_by(category_id) %>%
-  summarize(n = sum(n)) %>%
-  inner_join(
-    emolecules_files[["category"]] %>%
-      lazy_dt(key_by = c(category_id)) %>%
-      select(category_id, name, description),
-    by = c("category_id")
-  ) %>%
-  as_tibble()
+emolecules_files[["sample"]][
+  , .(n = .N),
+  keyby = .(catalog_id)
+][
+  emolecules_files[["catalog_categories"]][
+    , .(catalog_id, category_id)
+  ]
+][
+  , .(n = sum(n)),
+  keyby = .(category_id)
+][
+  emolecules_files[["category"]][
+    , .(category_id, name, description)
+  ], nomatch = NULL
+]
 
-# # A tibble: 3 x 4
-# category_id        n name                 description
-# <dbl>    <int> <chr>                <chr>
-# 1           2 12400298 Building blocks      Catalog of building blocks
-# 2           3 24620788 Screening compounds  Catalog screening compounds
-# 3           4 36965134 Commercial compounds Catalog of commercially-available compounds
+# category_id        n                 name                                 description
+# 1:           2 12677651      Building blocks                  Catalog of building blocks
+# 2:           3 29877623  Screening compounds                 Catalog screening compounds
+# 3:           4 42499962 Commercial compounds Catalog of commercially-available compounds
 
 filtered_compounds <- emolecules_files[["sample"]] %>%
   filter(
     catalog_id %in% intersect(
       emolecules_files[["catalog_tiers"]] %>%
         filter(tier_num %in% c(1, 2, 3)) %>%
-        pull(catalogue_id),
+        pull(catalog_id),
       emolecules_files[["category"]] %>%
         filter(name %in% c("Building blocks", "Commercial compounds")) %>%
         inner_join(
@@ -154,14 +147,14 @@ filtered_compounds <- emolecules_files[["sample"]] %>%
   )
 
 filtered_compounds$parent_id %>% unique() %>% length()
-#[1] 19692658
+# [1] 25172847
 
-write_csv(
+fwrite(
   filtered_compounds,
   file.path(dir_emolecules, "emolecules_vendor_info.csv.gz")
 )
 
-write_csv(
+fwrite(
   parent_molecules_both %>%
     filter(parent_id %in% filtered_compounds[["parent_id"]]),
   file.path(dir_emolecules, "emolecules_compounds.csv.gz")
@@ -177,11 +170,11 @@ emolecules_activity <- Activity(
   executed = "https://github.com/labsyspharm/small-molecule-suite-maintenance/blob/master/id_mapping/01_emolecules.R"
 )
 
-syn_emolecules <- synMkdir(syn_release, "id_mapping", "emolecules")
+syn_emolecules <- synMkdir(syn_release, "id_mapping", "emolecules", .recursive = TRUE)
 
 c(
   file.path(dir_emolecules, "emolecules_vendor_info.csv.gz"),
   file.path(dir_emolecules, "emolecules_compounds.csv.gz"),
   file.path(dir_emolecules, emolecules_file_names)
 ) %>%
-  synStoreMany(syn_emolecules, activity = emolecules_activity)
+  synStoreMany(syn_emolecules, activity = emolecules_activity, forceVersion = FALSE)
