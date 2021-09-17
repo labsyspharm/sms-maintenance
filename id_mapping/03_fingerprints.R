@@ -12,7 +12,7 @@ library(qs)
 synLogin()
 syn <- synDownloader(here("tempdl"))
 
-release <- "chembl_v27"
+release <- "chembl_v29"
 dir_release <- here(release)
 syn_release <- synFindEntityId(release, "syn18457321")
 
@@ -30,26 +30,31 @@ compounds <- inputs[["inchis"]] %>%
 # Create molecular fingerprints ------------------------------------------------
 ###############################################################################T
 
-fingerprinting_fun <- function(compound_file, output_file, fingerprint_type, fingerprint_args, port = 8000) {
+fingerprinting_fun <- function(compound_file, output_file, fingerprint_type, fingerprint_args, port = NULL) {
   library(processx)
   library(tidyverse)
   library(lspcheminf)
 
+  if (is.null(port))
+    port <- httpuv::randomPort()
+
   lspcheminf_script <- paste0(
-    "unset PYTHONPATH
-    unset PYTHONHOME
-    source ~/miniconda3/etc/profile.d/conda.sh
+    "source ~/.bashrc
     conda activate lspcheminf_env
     gunicorn --workers=1 -b 127.0.0.1:", port, " -t 60000 lspcheminf"
   )
 
+  # Because of freak bug where the entire process hangs when stdout / stderr
+  # is captured disablign it. I can't see anythign strange about the output
+  # when I runn the process manually
   lspcheminf_p <- process$new(
-    "bash", c("-c", lspcheminf_script), stderr = "|", stdout = "|"
+    # "bash", c("-c", lspcheminf_script), stderr = "|", stdout = "|", env = character()
+    "bash", c("-c", lspcheminf_script), env = character()
   )
 
   Sys.sleep(5)
 
-  message("lspcheminf launch output", lspcheminf_p$read_error_lines(), lspcheminf_p$read_output_lines())
+  # message("lspcheminf launch output", lspcheminf_p$read_error_lines(), lspcheminf_p$read_output_lines())
 
   fingerprint_df <- tryCatch(
     {
@@ -114,7 +119,6 @@ cmpd_fingerprint_input <- cmpd_chunks %>%
   crossing(fingerprinting_args) %>%
   mutate(
     index_out = seq_len(n()),
-    port = 9000 + index_out,
     output_file = file.path(wd, paste0("compound_fingerprints_", index_out, ".csv"))
   )
 
@@ -131,8 +135,7 @@ batchMap(
   compound_file = cmpd_fingerprint_input[["compound_file"]],
   output_file = cmpd_fingerprint_input[["output_file"]],
   fingerprint_type = cmpd_fingerprint_input[["fp_type"]],
-  fingerprint_args = cmpd_fingerprint_input[["fp_args"]],
-  port = cmpd_fingerprint_input[["port"]]
+  fingerprint_args = cmpd_fingerprint_input[["fp_args"]]
 )
 
 
@@ -151,7 +154,7 @@ job_table <- findJobs() %>%
   mutate(chunk = 1)
 
 submitJobs(
-  job_table,
+  job_table[findErrors()],
   resources = list(
     memory = "2gb",
     ncpus = 1L,
@@ -165,34 +168,23 @@ submitJobs(
 
 waitForJobs()
 
-cmpd_fingerprints_chunks <- cmpd_fingerprint_input %>%
-  select(
-    starts_with("fp_"), output_file
-  ) %>%
-  group_by(
-    across(starts_with("fp_"))
-  ) %>%
-  summarize(
-    data = output_file %>%
-      map(fread, colClasses = c("character", "numeric"), sep = ",", showProgress = FALSE) %>%
-      rbindlist() %>%
-      list(),
-    .groups = "drop"
-  )
+cmpd_fingerprints_chunks <- copy(setDT(cmpd_fingerprint_input))[
+  ,
+  data := lapply(output_file, fread, colClasses = c("character", "numeric"), sep = ",", showProgress = FALSE)
+]
 
-cmpd_fingerprints  <- cmpd_fingerprints_chunks %>%
-  rowwise() %>%
-  mutate(
-    data = data[
-      , .(inchi_id = as.integer(names), fingerprints)
-    ] %>%
-      list()
-  ) %>%
-  ungroup() %>%
-  select(-fp_args) %>%
-  unnest(data) %>%
-  setDT() %>%
-  setkey(fp_name, fp_type, inchi_id)
+all(map_int(cmpd_fingerprints_chunks$data, nrow) > 1)
+
+cmpd_fingerprints_nested <- cmpd_fingerprints_chunks[
+  ,
+  .(data = list(rbindlist(data, use.names = TRUE, fill = TRUE))),
+  by = .(fp_name, fp_type)
+]
+
+qsave(cmpd_fingerprints_nested, file.path(dir_release, "all_compounds_fingerprints_nested.qs"))
+
+cmpd_fingerprints <- cmpd_fingerprints_nested %>%
+  unnest(data)
 
 fwrite(cmpd_fingerprints, file.path(dir_release, "all_compounds_fingerprints.csv.gz"))
 
@@ -207,11 +199,10 @@ fingerprint_activity <- Activity(
   executed = "https://github.com/clemenshug/small-molecule-suite-maintenance/blob/master/id_mapping/03_fingerprints.R"
 )
 
-fp_folder <- Folder("fingerprints", syn_release) %>%
-  synStore() %>%
-  chuck("properties", "id")
+fp_folder <- synMkdir(syn_release, "fingerprints")
 
 c(
+  file.path(dir_release, "all_compounds_fingerprints_nested.qs"),
   file.path(dir_release, "all_compounds_fingerprints.csv.gz")
 ) %>%
-  synStoreMany(parent = fp_folder, activity = fingerprint_activity)
+  synStoreMany(parent = fp_folder, activity = fingerprint_activity, forceVersion = FALSE)
